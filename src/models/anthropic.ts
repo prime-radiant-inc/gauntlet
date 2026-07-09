@@ -11,9 +11,11 @@ import { withLlmErrorSanitization } from "../util/sanitize-error";
  * cap.
  */
 export function maxOutputTokensForModel(model: string): number {
-  // Known current families (Claude 4.x, Fable/Mythos): plenty of output
-  // headroom — the high cap is opt-in by family, not the default.
-  if (/^claude-(opus|sonnet|haiku)-4/.test(model) || /^claude-(fable|mythos)-/.test(model)) {
+  // Modern named-tier families (Claude 4.x and up, Fable/Mythos): plenty of
+  // output headroom — the high cap is opt-in by family, not the default. The
+  // `claude-{tier}-{gen}` naming only exists for gen 4+, so a version-agnostic
+  // match never collides with the 3.x `claude-3-...` ids handled below.
+  if (/^claude-(opus|sonnet|haiku)-/.test(model) || /^claude-(fable|mythos)-/.test(model)) {
     return 16384;
   }
   // Claude 3.5 / 3.7 family: 8192 without beta headers.
