@@ -106,6 +106,15 @@ describe("maxOutputTokensForModel", () => {
     expect(maxOutputTokensForModel("claude-mythos-5")).toBe(16384);
   });
 
+  test("Claude 5 named-tier family (opus/sonnet/haiku-5) gets the full 16384 budget", () => {
+    // The named-tier generation number is version-agnostic: gen 5 (and beyond)
+    // must get the same headroom as gen 4. The pre-fix regex pinned `-4`, so
+    // claude-sonnet-5 fell to the 4096 fallback that "killed a run mid-verdict".
+    expect(maxOutputTokensForModel("claude-sonnet-5")).toBe(16384);
+    expect(maxOutputTokensForModel("claude-opus-5")).toBe(16384);
+    expect(maxOutputTokensForModel("claude-haiku-5")).toBe(16384);
+  });
+
   test("unrecognized or ancient model ids fall back to the conservative 4096", () => {
     expect(maxOutputTokensForModel("claude-2.1")).toBe(4096);
     expect(maxOutputTokensForModel("claude-instant-1.2")).toBe(4096);
