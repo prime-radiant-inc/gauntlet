@@ -63,6 +63,14 @@ export interface TUIAdapterOptions {
   /** Override the capture parser (differential testing, future ghostty
    *  selection). Defaults to xterm. */
   captureParser?: CaptureParser;
+  /**
+   * How long close() waits (ms) for descendants to exit on the HUP from
+   * the dying pty before SIGKILLing them. Well-behaved TUI agents flush
+   * state on HUP (Copilot CLI writes its session.shutdown usage record
+   * ~11ms after the signal); an instant SIGKILL races that flush away.
+   * Default 3000.
+   */
+  descendantGraceMs?: number;
 }
 
 export class TUIAdapter implements Adapter {
@@ -76,6 +84,7 @@ export class TUIAdapter implements Adapter {
   private runDir: string | undefined;
   private logger: EvidenceLogger | undefined;
   private bashPid: number | null = null;
+  private descendantGraceMs: number;
 
   constructor(options?: TUIAdapterOptions) {
     this.shared = buildSharedTools({
@@ -86,6 +95,7 @@ export class TUIAdapter implements Adapter {
     this.captureParser = options?.captureParser ?? defaultCaptureParser;
     this.runDir = options?.runDir;
     this.logger = options?.logger;
+    this.descendantGraceMs = options?.descendantGraceMs ?? 3000;
   }
 
   get sessionName(): string {
@@ -266,8 +276,22 @@ export class TUIAdapter implements Adapter {
       // server may already be dead
     }
 
+    // The dying pty just HUP'd the pane's process group. Give descendants a
+    // grace window to flush state and exit on their own (Copilot CLI writes
+    // its session.shutdown usage record ~11ms after SIGHUP) before hard-
+    // killing the stragglers — an instant SIGKILL races that flush away.
+    const alive = (pid: number): boolean => {
+      try { process.kill(pid, 0); return true; } catch { return false; }
+    };
+    const deadline = Date.now() + this.descendantGraceMs;
+    let survivors = descendants.filter(alive);
+    while (survivors.length > 0 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 50));
+      survivors = survivors.filter(alive);
+    }
+
     let reaped = 0;
-    for (const pid of descendants) {
+    for (const pid of survivors) {
       try { process.kill(pid, "SIGKILL"); reaped++; } catch { /* already dead */ }
     }
     if (reaped > 0 && this.logger) {

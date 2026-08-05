@@ -1,7 +1,7 @@
 import { describe, test, expect, afterEach, beforeEach } from "bun:test";
 import { TUIAdapter } from "../../../src/adapters/tui/adapter";
 import { EvidenceLogger } from "../../../src/evidence/logger";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, existsSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 
@@ -119,11 +119,20 @@ describe.skipIf(!tmuxAvailable)("TUIAdapter", () => {
     const localRunDir = mkdtempSync(join(tmpdir(), "tui-close-"));
     const localLogDir = mkdtempSync(join(tmpdir(), "tui-close-log-"));
     const localLogger = new EvidenceLogger(localLogDir);
-    adapter = new TUIAdapter({ runDir: localRunDir, logger: localLogger });
+    // Small grace: sleep(1) ignores HUP, so it always burns the full window
+    // before the SIGKILL this test exercises — keep the suite fast.
+    adapter = new TUIAdapter({
+      runDir: localRunDir,
+      logger: localLogger,
+      descendantGraceMs: 250,
+    });
     try {
       await adapter.start("informational");
       await new Promise((r) => setTimeout(r, 300));
-      await adapter.type("sleep 999 & echo PID=$!\n");
+      // nohup: HUP-immune, so it survives the grace window and exercises the
+      // SIGKILL orphan guarantee (a plain background sleep dies from bash's
+      // HUP propagation during the grace and never needs reaping).
+      await adapter.type("nohup sleep 999 >/dev/null 2>&1 & echo PID=$!\n");
       await new Promise((r) => setTimeout(r, 400));
       const screen = await adapter.readScreen();
       const match = screen.match(/PID=(\d+)/);
@@ -139,6 +148,38 @@ describe.skipIf(!tmuxAvailable)("TUIAdapter", () => {
 
       const jsonl = readFileSync(join(localLogDir, "run.jsonl"), "utf-8");
       expect(jsonl).toContain("tui_session_descendants_reaped");
+    } finally {
+      rmSync(localRunDir, { recursive: true, force: true });
+      rmSync(localLogDir, { recursive: true, force: true });
+    }
+  });
+
+  test("close grants a HUP-flush grace: a descendant that exits on HUP keeps its final write", async () => {
+    const localRunDir = mkdtempSync(join(tmpdir(), "tui-close-grace-"));
+    const localLogDir = mkdtempSync(join(tmpdir(), "tui-close-grace-log-"));
+    const localLogger = new EvidenceLogger(localLogDir);
+    adapter = new TUIAdapter({
+      runDir: localRunDir,
+      logger: localLogger,
+      descendantGraceMs: 2000,
+    });
+    try {
+      await adapter.start("informational");
+      await new Promise((r) => setTimeout(r, 300));
+      // Foreground descendant that flushes state on HUP after a short delay —
+      // modeled on Copilot CLI, which writes its session.shutdown usage record
+      // ~11ms after SIGHUP. An instant SIGKILL after kill-server loses that
+      // flush; the grace window must let it complete.
+      const marker = join(localRunDir, "flushed.marker");
+      await adapter.type(
+        `bash -c 'sleep 999 & S=$!; trap "sleep 0.3; echo done > ${marker}; kill \$S; exit 0" HUP; wait'\n`,
+      );
+      await new Promise((r) => setTimeout(r, 500));
+
+      await adapter.close();
+      adapter = null;
+
+      expect(existsSync(marker)).toBe(true);
     } finally {
       rmSync(localRunDir, { recursive: true, force: true });
       rmSync(localLogDir, { recursive: true, force: true });
