@@ -3,6 +3,17 @@ import type { LLMClient, ToolDefinition, AgentResponse, StopReason, ToolCall, To
 import { withLlmErrorSanitization } from "../util/sanitize-error";
 
 /**
+ * The native Anthropic model id behind a request id. Bedrock (and its
+ * Anthropic-compatible Mantle surface) names Anthropic models with a vendor
+ * prefix — `anthropic.claude-sonnet-5` is `claude-sonnet-5` served through
+ * Bedrock. The request must carry the prefixed id verbatim; family-keyed
+ * decisions (provider routing, output caps) key on the native id.
+ */
+export function nativeAnthropicModelId(model: string): string {
+  return model.replace(/^anthropic\./, "");
+}
+
+/**
  * Per-model output-token ceiling. 4096 killed a run mid-verdict
  * (PRI-2160, run b35d: adaptive thinking counts against the cap and a
  * judge composing its final report can think past 4k), but legacy
@@ -11,15 +22,16 @@ import { withLlmErrorSanitization } from "../util/sanitize-error";
  * cap.
  */
 export function maxOutputTokensForModel(model: string): number {
+  const native = nativeAnthropicModelId(model);
   // Modern named-tier families (Claude 4.x and up, Fable/Mythos): plenty of
   // output headroom — the high cap is opt-in by family, not the default. The
   // `claude-{tier}-{gen}` naming only exists for gen 4+, so a version-agnostic
   // match never collides with the 3.x `claude-3-...` ids handled below.
-  if (/^claude-(opus|sonnet|haiku)-/.test(model) || /^claude-(fable|mythos)-/.test(model)) {
+  if (/^claude-(opus|sonnet|haiku)-/.test(native) || /^claude-(fable|mythos)-/.test(native)) {
     return 16384;
   }
   // Claude 3.5 / 3.7 family: 8192 without beta headers.
-  if (/^claude-3-[57]-/.test(model)) return 8192;
+  if (/^claude-3-[57]-/.test(native)) return 8192;
   // Everything else — Claude 3.0, Claude 2.x, and any unrecognized id —
   // keeps the conservative 4096 this code always sent before the raise.
   return 4096;

@@ -115,6 +115,15 @@ describe("maxOutputTokensForModel", () => {
     expect(maxOutputTokensForModel("claude-haiku-5")).toBe(16384);
   });
 
+  test("Bedrock/Mantle-prefixed ids get their native family's budget", () => {
+    // The vendor prefix is transport naming, not a different model: the cap
+    // that fits claude-sonnet-5 fits anthropic.claude-sonnet-5.
+    expect(maxOutputTokensForModel("anthropic.claude-sonnet-5")).toBe(16384);
+    expect(maxOutputTokensForModel("anthropic.claude-opus-4-8")).toBe(16384);
+    expect(maxOutputTokensForModel("anthropic.claude-3-5-sonnet-20241022")).toBe(8192);
+    expect(maxOutputTokensForModel("anthropic.claude-3-opus-20240229")).toBe(4096);
+  });
+
   test("unrecognized or ancient model ids fall back to the conservative 4096", () => {
     expect(maxOutputTokensForModel("claude-2.1")).toBe(4096);
     expect(maxOutputTokensForModel("claude-instant-1.2")).toBe(4096);

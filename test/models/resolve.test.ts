@@ -8,6 +8,14 @@ describe("resolveProvider", () => {
     expect(resolveProvider("claude-3-5-sonnet-20241022")).toBe("anthropic");
   });
 
+  test("returns anthropic for Bedrock/Mantle-prefixed claude models", () => {
+    // Bedrock (and its Anthropic-compatible Mantle surface) names Anthropic
+    // models with a vendor prefix; the request must carry that id verbatim,
+    // so routing keys on the native id behind it.
+    expect(resolveProvider("anthropic.claude-sonnet-5")).toBe("anthropic");
+    expect(resolveProvider("anthropic.claude-opus-4-8")).toBe("anthropic");
+  });
+
   test("returns openai for gpt/o-series models", () => {
     expect(resolveProvider("gpt-4o")).toBe("openai");
     expect(resolveProvider("gpt-4o-mini")).toBe("openai");
@@ -26,6 +34,7 @@ describe("resolveProvider", () => {
       expect(err).toBeInstanceOf(UnknownModelProviderError);
       expect((err as UnknownModelProviderError).code).toBe("unknown_model");
       expect((err as UnknownModelProviderError).message).toContain("claude*");
+      expect((err as UnknownModelProviderError).message).toContain("anthropic.claude*");
       expect((err as UnknownModelProviderError).message).toContain("gpt*");
       expect((err as UnknownModelProviderError).message).toContain("o1*");
       expect((err as UnknownModelProviderError).message).toContain("o3*");

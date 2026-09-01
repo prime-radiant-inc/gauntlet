@@ -1,9 +1,10 @@
 import type { LLMClient, Provider } from "./provider";
 import type { ModelConfig } from "../types";
-import { createAnthropicClient } from "./anthropic";
+import { createAnthropicClient, nativeAnthropicModelId } from "./anthropic";
 import { createOpenAIClient } from "./openai";
 
-export const SUPPORTED_MODEL_PREFIXES_MESSAGE = "Supported prefixes: claude*, gpt*, o1*, o3*";
+export const SUPPORTED_MODEL_PREFIXES_MESSAGE =
+  "Supported prefixes: claude*, anthropic.claude*, gpt*, o1*, o3*";
 
 export class UnknownModelProviderError extends Error {
   readonly code = "unknown_model";
@@ -28,7 +29,7 @@ export function createClient(model: string): LLMClient {
 }
 
 export function resolveProvider(model: string): Provider {
-  if (model.startsWith("claude")) return "anthropic";
+  if (nativeAnthropicModelId(model).startsWith("claude")) return "anthropic";
   if (model.startsWith("gpt") || model.startsWith("o1") || model.startsWith("o3")) {
     return "openai";
   }
