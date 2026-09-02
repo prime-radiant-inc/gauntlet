@@ -13,6 +13,19 @@ import type Anthropic from "@anthropic-ai/sdk";
 import { maxOutputTokensForModel } from "../../src/models/anthropic";
 
 describe("resolveAnthropicAuth", () => {
+  test("GAUNTLET_OAUTH_TOKEN wins over the Claude Code and SDK token names", () => {
+    // Claude Code reads CLAUDE_CODE_OAUTH_TOKEN itself, so Gauntlet's own
+    // name must win when both are present or a user cannot keep them apart.
+    expect(
+      resolveAnthropicAuth({
+        GAUNTLET_OAUTH_TOKEN: "sk-ant-oat01-gauntlet",
+        CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-aaa",
+        ANTHROPIC_AUTH_TOKEN: "sk-ant-oat01-ccc",
+        ANTHROPIC_API_KEY: "sk-ant-api03-bbb",
+      }),
+    ).toEqual({ mode: "oauth", token: "sk-ant-oat01-gauntlet" });
+  });
+
   test("prefers a subscription OAuth token (CLAUDE_CODE_OAUTH_TOKEN) over an API key", () => {
     expect(
       resolveAnthropicAuth({
@@ -37,7 +50,7 @@ describe("resolveAnthropicAuth", () => {
 
   test("throws when neither an OAuth token nor an API key is set", () => {
     expect(() => resolveAnthropicAuth({})).toThrow(
-      /CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY/,
+      /GAUNTLET_OAUTH_TOKEN|ANTHROPIC_API_KEY/,
     );
   });
 });

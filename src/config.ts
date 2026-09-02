@@ -412,7 +412,7 @@ function resolveCredentialResolver(
 export function requireLlmCapable(config: AppConfig): void {
   if (!config.apiKeys.anthropic && !config.apiKeys.openai) {
     throw new Error(
-      "No LLM provider configured. Set CLAUDE_CODE_OAUTH_TOKEN (a Claude " +
+      "No LLM provider configured. Set GAUNTLET_OAUTH_TOKEN (a Claude " +
       "subscription token from `claude setup-token`) or ANTHROPIC_API_KEY (for " +
       "Claude models), or OPENAI_API_KEY (for GPT models). Run 'gauntlet config' " +
       "to see current state.",
@@ -622,11 +622,13 @@ export function loadConfig(args: CliArgsInput, env: NodeJS.ProcessEnv): AppConfi
   const availableSource: "default" | "env" | "flag" = availableR.source;
 
   // apiKeys (presence only). A Claude subscription is an Anthropic credential
-  // too: a `claude setup-token` OAuth token (CLAUDE_CODE_OAUTH_TOKEN, or the
-  // SDK-native ANTHROPIC_AUTH_TOKEN) counts even without ANTHROPIC_API_KEY.
+  // too: a `claude setup-token` OAuth token (GAUNTLET_OAUTH_TOKEN, or the
+  // Claude Code / SDK names CLAUDE_CODE_OAUTH_TOKEN and ANTHROPIC_AUTH_TOKEN)
+  // counts even without ANTHROPIC_API_KEY. Same set as resolveAnthropicAuth.
   const apiKeys = {
     anthropic: Boolean(
       env.ANTHROPIC_API_KEY ||
+        env.GAUNTLET_OAUTH_TOKEN ||
         env.CLAUDE_CODE_OAUTH_TOKEN ||
         env.ANTHROPIC_AUTH_TOKEN,
     ),
