@@ -8,6 +8,7 @@ import { defaultCaptureParser, type CaptureParser } from "./capture-parser";
 import { spawnSync } from "../../runtime/spawn";
 import { mkdirSync } from "fs";
 import { join } from "path";
+import { runInputGuard, type InputGuard } from "./input-guard";
 import { listDescendants } from "../../runtime/process-tree";
 
 /**
@@ -46,6 +47,7 @@ const AVAILABLE_KEYS = Object.keys(KEY_MAP).join(", ");
 
 export interface TUIAdapterOptions {
   contextRoot?: string;
+  inputGuard?: InputGuard;
   /**
    * Per-run directory; adapter creates `<runDir>/scratch` as bash cwd.
    * Required at start(); optional only so the registry's
@@ -86,7 +88,10 @@ export class TUIAdapter implements Adapter {
   private bashPid: number | null = null;
   private descendantGraceMs: number;
 
+  private readonly inputGuard?: InputGuard;
+
   constructor(options?: TUIAdapterOptions) {
+    this.inputGuard = options?.inputGuard;
     this.shared = buildSharedTools({
       contextRoot: options?.contextRoot,
       credentialResolver: options?.credentialResolver,
@@ -180,6 +185,7 @@ export class TUIAdapter implements Adapter {
   }
 
   async type(text: string): Promise<void> {
+    this.guard("type", { text });
     const result = spawnSync(this.tmux(
       "send-keys",
       "-t",
@@ -195,6 +201,7 @@ export class TUIAdapter implements Adapter {
   }
 
   async press(key: string): Promise<void> {
+    this.guard("press", { key });
     const mapped = KEY_MAP[key];
     if (!mapped) throw new Error(`Unknown key: ${key}. Available: ${AVAILABLE_KEYS}`);
 
@@ -219,30 +226,14 @@ export class TUIAdapter implements Adapter {
   // fixed delay covers a single ~16ms frame and turns the race into a
   // guarantee.
   async typeAndSubmit(text: string): Promise<void> {
-    const typed = spawnSync(this.tmux(
-      "send-keys",
-      "-t",
-      this.sessionName,
-      "-l",
-      text,
-    ));
-    if (typed.exitCode !== 0) {
-      const stderr = new TextDecoder().decode(typed.stderr);
-      throw new Error(`Failed to type-and-submit (typing): ${stderr}`);
-    }
-
+    await this.type(text);
     await new Promise((r) => setTimeout(r, 15));
+    await this.press("Enter");
+  }
 
-    const submitted = spawnSync(this.tmux(
-      "send-keys",
-      "-t",
-      this.sessionName,
-      "Enter",
-    ));
-    if (submitted.exitCode !== 0) {
-      const stderr = new TextDecoder().decode(submitted.stderr);
-      throw new Error(`Failed to type-and-submit (submitting): ${stderr}`);
-    }
+  private guard(name: string, args: Record<string, unknown>, logger = this.logger): void {
+    if (!this.inputGuard || (name === "press" && ["Escape", "Ctrl+C"].includes(String(args.key)))) return;
+    runInputGuard(this.inputGuard, { name, args }, logger);
   }
 
   describeTarget(target: string): string {
@@ -308,7 +299,7 @@ export class TUIAdapter implements Adapter {
   }
 
   isMutatingTool(name: string): boolean {
-    return name === "type" || name === "press" || name === "type_and_submit";
+    return name === "type" || name === "press" || name === "type_and_submit" || (name === "bash" && !!this.inputGuard);
   }
 
   toolDefinitions(): ToolDefinition[] {
@@ -380,6 +371,8 @@ export class TUIAdapter implements Adapter {
         return textResult(`Error: invalid args for ${name}: ${check.reason}`);
       }
     }
+
+    if (name === "bash") this.guard(name, args, logger);
 
     if (this.shared.canExecute(name)) {
       return this.shared.execute(name, args, logger);

@@ -30,6 +30,7 @@ export interface RunCommandOptions {
   /** Optional path to a Project prompt augmentation file. Forwarded to
    * `runOne`; resolution lives in the orchestrator. */
   projectPromptPath?: string;
+  tuiInputGuardPath?: string;
 }
 
 function makeRunObserver(
@@ -96,6 +97,7 @@ export async function run(opts: RunCommandOptions): Promise<void> {
       onLogger: (logger) => attachRenderer(logger, streamOpts, sink),
       clientFactory: opts.clientFactory,
       projectPromptPath: opts.projectPromptPath,
+      tuiInputGuardPath: opts.tuiInputGuardPath,
     });
 
     await safeEmitIndexHtml(outDir);
@@ -167,6 +169,7 @@ export async function run(opts: RunCommandOptions): Promise<void> {
             runId,
             clientFactory: opts.clientFactory,
             projectPromptPath: opts.projectPromptPath,
+            tuiInputGuardPath: opts.tuiInputGuardPath,
           });
           await safeEmitIndexHtml(summary.outDir);
           return summary;
