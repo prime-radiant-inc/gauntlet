@@ -132,6 +132,12 @@ describe("loadConfig", () => {
     expect(c.apiKeys.openai).toBe(false);
   });
 
+  test("GAUNTLET_OAUTH_TOKEN alone counts as an Anthropic credential", () => {
+    const c = loadConfig({}, { GAUNTLET_OAUTH_TOKEN: "sk-ant-oat01-xxx" } as NodeJS.ProcessEnv);
+    expect(c.apiKeys.anthropic).toBe(true);
+    expect(c.apiKeys.openai).toBe(false);
+  });
+
   test("defaultSaveScreencast defaults to false", () => {
     const c = loadConfig({}, emptyEnv);
     expect(c.defaultSaveScreencast).toBe(false);

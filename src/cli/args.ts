@@ -586,7 +586,9 @@ Environment:
   GAUNTLET_FANOUT_MODEL      Default fanout model
   GAUNTLET_MODELS            Comma-separated model allow-list
 
-  CLAUDE_CODE_OAUTH_TOKEN  Claude subscription token (claude setup-token); preferred over ANTHROPIC_API_KEY
+  GAUNTLET_OAUTH_TOKEN     Claude subscription token (claude setup-token); preferred over ANTHROPIC_API_KEY.
+                           CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_AUTH_TOKEN are honoured too, but Claude Code
+                           reads those, so a global export under them hijacks every Claude Code session
   ANTHROPIC_API_KEY        Read by the Anthropic SDK (if using Claude models)
   OPENAI_API_KEY           Read by the OpenAI SDK (if using GPT models)
 
