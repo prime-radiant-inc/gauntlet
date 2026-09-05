@@ -93,6 +93,7 @@ export interface ExecuteRunCoreOptions {
    * unset, `resolveProjectPrompt` falls through to `<state-dir>/project.md`
    * under `runConfig.projectRoot` (or no Project block if that's absent). */
   projectPromptPath?: string;
+  tuiInputGuardPath?: string;
   /**
    * Optional cancellation signal forwarded to `runAgent`. When aborted,
    * the agent loop returns a synthetic `errored` VetResult; the
@@ -134,13 +135,17 @@ async function buildDefaultAdapter(
   chrome: ChromeEndpoint | undefined,
   viewport: Viewport | undefined,
   credentialResolver: CredentialResolverConfig | undefined,
+  tuiInputGuardPath?: string,
 ): Promise<Adapter> {
   switch (type) {
     case "cli":
       return new CLIAdapter({ contextRoot, runDir, logger, credentialResolver });
     case "tui": {
       const { TUIAdapter } = await import("../adapters/tui/adapter");
-      return new TUIAdapter({ contextRoot, runDir, logger, credentialResolver });
+      return new TUIAdapter({
+        contextRoot, runDir, logger, credentialResolver,
+        inputGuard: tuiInputGuardPath ? { path: tuiInputGuardPath, timeoutMs: 10_000 } : undefined,
+      });
     }
     case "web": {
       const { WebAdapter } = await import("../adapters/web/adapter");
@@ -190,6 +195,7 @@ export async function executeRunCore(
         runConfig.chrome,
         runConfig.viewport,
         runConfig.credentialResolver,
+        opts.tuiInputGuardPath,
       ));
 
   try {

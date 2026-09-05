@@ -58,6 +58,7 @@ async function main() {
         noColor: args.noColor,
         passes: args.passes,
         projectPromptPath: args.projectPromptPath,
+        tuiInputGuardPath: args.tuiInputGuardPath,
       });
       break;
     }

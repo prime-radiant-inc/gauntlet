@@ -35,6 +35,7 @@ export interface RunOneOptions {
    * which resolves it via `resolveProjectPrompt`. Undefined means "fall
    * through to .gauntlet/project.md auto-load". */
   projectPromptPath?: string;
+  tuiInputGuardPath?: string;
 }
 
 export interface RunOneSummary {
@@ -62,6 +63,7 @@ export async function runOne(opts: RunOneOptions): Promise<RunOneSummary> {
     client,
     runSetCtx: opts.runSetCtx,
     projectPromptPath: opts.projectPromptPath,
+    tuiInputGuardPath: opts.tuiInputGuardPath,
     runConfig: {
       projectRoot: config.projectRoot,
       stateDirName: config.stateDirName,

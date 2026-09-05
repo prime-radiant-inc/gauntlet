@@ -1,4 +1,5 @@
 import type { CliArgsInput } from "../config";
+import { isAbsolute } from "node:path";
 import { ADAPTER_TYPES, isAdapterType, type AdapterType } from "../adapters/adapter";
 
 /**
@@ -49,14 +50,14 @@ const RUN_ALLOWED = new Set([
   "max-time", "reflection-interval", "viewport", "save-screencast",
   "silent", "format", "no-color", "passes",
   "project-prompt",
-  "show-prompt-and-exit",
+  "show-prompt-and-exit", "tui-input-guard",
 ]);
 // Everything `run` accepts, minus `--out` — batch doesn't invent a
 // batch-level results dir; each card writes to its default per-run dir.
 // `--project-prompt` and `--show-prompt-and-exit` are excluded; batch
 // may get them in a future task.
 const BATCH_ALLOWED = new Set([...RUN_ALLOWED].filter(
-  (f) => f !== "out" && f !== "project-prompt" && f !== "show-prompt-and-exit",
+  (f) => f !== "out" && f !== "project-prompt" && f !== "show-prompt-and-exit" && f !== "tui-input-guard",
 ));
 const VALIDATE_ALLOWED = new Set<string>([]);
 const FANOUT_ALLOWED = new Set(["out", "model", "from-result"]);
@@ -89,6 +90,7 @@ export interface RunArgs {
   noColor: boolean;
   passes: number;
   projectPromptPath?: string;
+  tuiInputGuardPath?: string;
   showPromptAndExit: boolean;
   cli: CliArgsInput;
 }
@@ -260,6 +262,13 @@ function parseRunArgs(args: string[]): RunArgs {
     adapter = flags.adapter;
   }
 
+  if (flags["tui-input-guard"] !== undefined) {
+    if (!isAbsolute(flags["tui-input-guard"])) {
+      throw new Error("--tui-input-guard requires an explicit absolute executable path");
+    }
+    if (adapter !== "tui") throw new Error("--tui-input-guard requires --adapter tui");
+  }
+
   let format: "pretty" | "jsonl" | undefined;
   if (flags.format !== undefined) {
     if (flags.format !== "pretty" && flags.format !== "jsonl") {
@@ -278,6 +287,7 @@ function parseRunArgs(args: string[]): RunArgs {
     noColor: flags["no-color"] === "true",
     passes: parsePasses(flags.passes),
     projectPromptPath: flags["project-prompt"],
+    tuiInputGuardPath: flags["tui-input-guard"],
     showPromptAndExit: flags["show-prompt-and-exit"] === "true",
     cli: {
       projectRoot: flags["project-dir"],
@@ -505,6 +515,7 @@ Commands:
     --viewport WxH       Browser viewport (default: 1440x900)
     --save-screencast    Persist screencast frames to disk (default: off; live WS stream is always on)
     --out <dir>          Evidence output directory (default: <project>/<state-dir>/results/<runId>)
+    --tui-input-guard <path>  Trusted executable invoked before TUI input and bash; failure blocks dispatch
     --project-dir <dir>  Project root (contains the state dir)
     --state-dir <name>   State directory leaf name (default: .gauntlet). Single segment, no slashes.
                          A non-dotted name (e.g. "gauntlet") is committed by default — add to .gitignore yourself.
