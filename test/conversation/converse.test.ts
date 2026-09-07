@@ -231,6 +231,16 @@ describe("ConversationRecord", () => {
     })).toThrow();
   });
 
+  test("rejects parseable timestamps that are not ISO timestamps", () => {
+    expect(() => validateConversationRecord({
+      status: "errored",
+      endpoint: null,
+      reason: "provider failed",
+      timestamp: "September 7, 2026",
+      evidence: null,
+    })).toThrow(/ISO timestamp/);
+  });
+
   test("maps completed endpoints to success and role execution failures to exit one", () => {
     const completed = validateConversationRecord({
       status: "completed",
@@ -374,6 +384,33 @@ describe("runConversation", () => {
       await fx.run();
       expect(adapter.inputFinished).toBe(true);
       expect(adapter.inputs).toEqual([]);
+    } finally {
+      rmSync(fx.root, { recursive: true, force: true });
+    }
+  });
+
+  test("treats failed atomic completion persistence as an instrument error", async () => {
+    const adapter = new ScriptedAdapter("Delivered: cannot persist");
+    const client = new ScriptedClient([
+      response([{ id: "screen", name: "read_screen", arguments: {} }]),
+      (messages) => {
+        const { capture } = captureFromHistory(messages);
+        return response([
+          { id: "finish", name: "finish_conversation", arguments: {
+            endpoint: "delivery", reason: "done", capture, quote: "Delivered: cannot persist",
+          } },
+          { id: "late-input", name: "type_and_submit", arguments: { text: "touch forbidden" } },
+        ]);
+      },
+    ]);
+    const fx = fixture(adapter, client);
+    mkdirSync(fx.completionPath);
+    try {
+      await expect(fx.run()).rejects.toThrow(/persist conversation completion/i);
+      expect(adapter.inputFinished).toBe(true);
+      expect(adapter.inputs).toEqual([]);
+      expect(adapter.closed).toBe(1);
+      expect(existsSync(`${fx.completionPath}.tmp`)).toBe(false);
     } finally {
       rmSync(fx.root, { recursive: true, force: true });
     }

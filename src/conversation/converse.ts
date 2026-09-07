@@ -1,4 +1,4 @@
-import { appendFileSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { appendFileSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import type { TUIAdapter } from "../adapters/tui/adapter";
 import type { Capture } from "../adapters/tui/capture-parser";
@@ -107,6 +107,13 @@ const TOOLS: ToolDefinition[] = [
 
 const TOOL_SCHEMAS = new Map(TOOLS.map((tool) => [tool.name, tool.parameters] as const));
 
+class ConversationPersistenceError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ConversationPersistenceError";
+  }
+}
+
 function captureText(capture: Capture): string {
   return capture.cells
     .map((row) => row.map((cell) => cell.ch).join("").trimEnd())
@@ -139,8 +146,15 @@ function thinkingBlocks(response: AgentResponse): Array<{ text: string; signatur
 function writeRecord(path: string, value: ConversationRecord): void {
   const record = validateConversationRecord(value);
   const temporary = `${path}.tmp`;
-  writeFileSync(temporary, `${JSON.stringify(record)}\n`);
-  renameSync(temporary, path);
+  try {
+    writeFileSync(temporary, `${JSON.stringify(record)}\n`);
+    renameSync(temporary, path);
+  } catch (error) {
+    try { unlinkSync(temporary); } catch { /* no temporary file to remove */ }
+    const reason = error instanceof Error ? error.message : String(error);
+    const kind = record.status === "completed" ? "completion" : "record";
+    throw new ConversationPersistenceError(`Failed to persist conversation ${kind}: ${reason}`);
+  }
 }
 
 function appendExchange(
@@ -288,7 +302,7 @@ export async function runConversation(options: ConverseOptions): Promise<Convers
         }
 
         adapter.finishInput();
-        completed = {
+        const record: ConversationRecord = {
           status: "completed",
           endpoint,
           reason,
@@ -298,7 +312,8 @@ export async function runConversation(options: ConverseOptions): Promise<Convers
             quote,
           },
         };
-        writeRecord(completionPath, completed);
+        writeRecord(completionPath, record);
+        completed = record;
         return textResult("conversation finished");
       }
     }
@@ -339,6 +354,7 @@ export async function runConversation(options: ConverseOptions): Promise<Convers
         try {
           result = await dispatch(call);
         } catch (caught) {
+          if (caught instanceof ConversationPersistenceError) throw caught;
           error = true;
           result = textResult(`Error: ${caught instanceof Error ? caught.message : String(caught)}`);
         }
@@ -369,6 +385,7 @@ export async function runConversation(options: ConverseOptions): Promise<Convers
       message: reason,
       stack: caught instanceof Error ? caught.stack : undefined,
     });
+    if (caught instanceof ConversationPersistenceError) throw caught;
     terminal = incompleteRecord("errored", reason);
     writeRecord(completionPath, terminal);
     return terminal;

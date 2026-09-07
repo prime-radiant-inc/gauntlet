@@ -14,6 +14,7 @@ const STATUSES = new Set<ConversationRecord["status"]>([
 const ENDPOINTS = new Set<NonNullable<ConversationRecord["endpoint"]>>([
   "delivery", "refusal",
 ]);
+const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -45,7 +46,11 @@ export function validateConversationRecord(value: unknown): ConversationRecord {
   if (typeof value.reason !== "string" || value.reason.trim() === "") {
     throw new Error("Conversation record reason must be nonempty");
   }
-  if (typeof value.timestamp !== "string" || !Number.isFinite(Date.parse(value.timestamp))) {
+  if (
+    typeof value.timestamp !== "string" ||
+    !ISO_TIMESTAMP.test(value.timestamp) ||
+    !Number.isFinite(Date.parse(value.timestamp))
+  ) {
     throw new Error("Conversation record timestamp must be an ISO timestamp");
   }
 
