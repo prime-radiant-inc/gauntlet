@@ -346,6 +346,10 @@ export class TUIAdapter implements Adapter {
     const descendants = this.panePid !== null
       ? listDescendants(this.panePid)
       : [];
+    // tmux makes the pane process the leader of a private process group. The
+    // group remains addressable after that leader exits, even though its
+    // surviving children have been reparented and disappear from PPID walks.
+    const preparedProcessGroup = this.preparedSubject ? this.panePid : null;
 
     try {
       // kill-server (not kill-session): the private server holds only this
@@ -362,9 +366,13 @@ export class TUIAdapter implements Adapter {
     const alive = (pid: number): boolean => {
       try { process.kill(pid, 0); return true; } catch { return false; }
     };
+    const processGroupAlive = (): boolean => {
+      if (preparedProcessGroup === null) return false;
+      try { process.kill(-preparedProcessGroup, 0); return true; } catch { return false; }
+    };
     const deadline = Date.now() + this.descendantGraceMs;
     let survivors = descendants.filter(alive);
-    while (survivors.length > 0 && Date.now() < deadline) {
+    while ((survivors.length > 0 || processGroupAlive()) && Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, 50));
       survivors = survivors.filter(alive);
     }
@@ -372,6 +380,9 @@ export class TUIAdapter implements Adapter {
     let reaped = 0;
     for (const pid of survivors) {
       try { process.kill(pid, "SIGKILL"); reaped++; } catch { /* already dead */ }
+    }
+    if (processGroupAlive()) {
+      try { process.kill(-preparedProcessGroup!, "SIGKILL"); } catch { /* already dead */ }
     }
     if (reaped > 0 && this.logger) {
       this.logger.logEvent("tui_session_descendants_reaped", {

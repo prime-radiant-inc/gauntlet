@@ -24,7 +24,7 @@ async function waitUntil(predicate: () => Promise<boolean>, description: string)
   throw new Error(`Timed out waiting for ${description}`);
 }
 
-function preparedFixture(scriptBody: string) {
+function preparedFixture(scriptBody: string, descendantGraceMs?: number) {
   const root = mkdtempSync(join(tmpdir(), "prepared subject-"));
   const runDir = join(root, "run");
   const workspace = join(root, "workspace with spaces");
@@ -35,9 +35,19 @@ function preparedFixture(scriptBody: string) {
   writeFileSync(launcherPath, `#!/bin/sh\n${scriptBody}`, { mode: 0o755 });
   const adapter = new TUIAdapter({
     runDir,
+    descendantGraceMs,
     preparedSubject: { launcherPath, workspace, socketPath },
   });
   return { adapter, launcherPath, root, runDir, socketPath, workspace };
+}
+
+function processIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function closeAndRemove(adapter: TUIAdapter, socketPath: string, root: string): Promise<void> {
@@ -96,6 +106,34 @@ printf 'Delivered: %s\\n' "$answer"
 
       expect(await fixture.adapter.readScreen()).toContain("Refused: no conversation available");
     } finally {
+      await closeAndRemove(fixture.adapter, fixture.socketPath, fixture.root);
+    }
+  });
+
+  test("close reaps a prepared child after its launcher exits without touching unrelated processes", async () => {
+    const fixture = preparedFixture(`
+base=$(dirname "$0")
+(trap '' HUP TERM; exec sleep 30) </dev/null >/dev/null 2>&1 &
+printf '%s\\n' "$!" > "$base/owned-pid"
+printf 'Launcher exited with child alive\\n'
+`, 100);
+    const unrelated = Bun.spawn(["sleep", "30"]);
+    let ownedPid: number | undefined;
+    try {
+      await fixture.adapter.start("");
+      await waitUntil(() => fixture.adapter.hasSubjectExited(), "the child-launching subject to exit");
+      ownedPid = Number(readFileSync(join(fixture.root, "owned-pid"), "utf8").trim());
+      expect(processIsAlive(ownedPid)).toBe(true);
+      expect(processIsAlive(unrelated.pid)).toBe(true);
+
+      await fixture.adapter.close();
+      await waitUntil(async () => !processIsAlive(ownedPid!), "the prepared subject child to be reaped");
+
+      expect(processIsAlive(unrelated.pid)).toBe(true);
+    } finally {
+      if (ownedPid && processIsAlive(ownedPid)) process.kill(ownedPid, "SIGKILL");
+      if (processIsAlive(unrelated.pid)) unrelated.kill();
+      await unrelated.exited;
       await closeAndRemove(fixture.adapter, fixture.socketPath, fixture.root);
     }
   });
