@@ -291,3 +291,56 @@ describe("converse command", () => {
     expect(() => parseArgs(invalidOut)).toThrow(/run id/i);
   });
 });
+
+describe("assess command", () => {
+  const argv = [
+    "bun", "index.ts", "assess", "/run/conversation-input/rubric.md",
+    "--evidence-root", "/run/evidence",
+    "--evidence-index", "/run/evidence/index.json",
+    "--out", "/run/gauntlet-agent/results/card-001_20260907T120000Z_ab12",
+    "--model", "agent=claude-sonnet-4-6",
+    "--max-time", "2m",
+  ];
+
+  test("parses the exact assessment role inputs and validates its run id", () => {
+    expect(parseArgs(argv)).toEqual({
+      command: "assess",
+      rubricPath: "/run/conversation-input/rubric.md",
+      evidenceRoot: "/run/evidence",
+      evidenceIndexPath: "/run/evidence/index.json",
+      outDir: "/run/gauntlet-agent/results/card-001_20260907T120000Z_ab12",
+      model: "claude-sonnet-4-6",
+      maxTimeMs: 120_000,
+      runId: "card-001_20260907T120000Z_ab12",
+      cardId: "card-001",
+    });
+  });
+
+  test("requires every assessment role flag", () => {
+    for (const flag of [
+      "--evidence-root", "--evidence-index", "--out", "--model", "--max-time",
+    ]) {
+      const index = argv.indexOf(flag);
+      const without = [...argv.slice(0, index), ...argv.slice(index + 2)];
+      expect(() => parseArgs(without)).toThrow(new RegExp(flag));
+    }
+  });
+
+  test("rejects unsupported flags, model roles, relative paths, and malformed run ids", () => {
+    expect(() => parseArgs([...argv, "--adapter", "tui"])).toThrow(/Unknown flag/);
+
+    const withFanout = [...argv];
+    withFanout[withFanout.indexOf("--model") + 1] = "fanout=claude-sonnet-4-6";
+    expect(() => parseArgs(withFanout)).toThrow(/agent=/);
+
+    for (const flag of ["--evidence-root", "--evidence-index", "--out"]) {
+      const invalid = [...argv];
+      invalid[invalid.indexOf(flag) + 1] = "relative/path";
+      expect(() => parseArgs(invalid)).toThrow(/absolute/i);
+    }
+
+    const invalidOut = [...argv];
+    invalidOut[invalidOut.indexOf("--out") + 1] = "/run/gauntlet-agent/results/not-a-run-id";
+    expect(() => parseArgs(invalidOut)).toThrow(/run id/i);
+  });
+});

@@ -26,6 +26,13 @@ async function main() {
   const args = parseArgs(process.argv);
 
   switch (args.command) {
+    case "assess": {
+      const { assess, assessmentExitCode } = await import("./cli/assess");
+      const result = await assess(args);
+      console.log(JSON.stringify(result));
+      process.exitCode = assessmentExitCode(result);
+      break;
+    }
     case "converse": {
       const { conversationExitCode, converse } = await import("./cli/converse");
       const record = await converse(args);

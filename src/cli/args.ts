@@ -71,6 +71,9 @@ const RENDER_ALLOWED = new Set(["project-dir", "state-dir"]);
 const CONVERSE_ALLOWED = new Set([
   "launcher", "workspace", "out", "completion", "tmux-socket", "model", "max-time",
 ]);
+const ASSESS_ALLOWED = new Set([
+  "evidence-root", "evidence-index", "out", "model", "max-time",
+]);
 
 function rejectUnknownFlags(
   flags: Record<string, unknown>,
@@ -165,7 +168,19 @@ export interface ConverseArgs {
   cardId: CardId;
 }
 
-export type ParsedArgs = RunArgs | BatchArgs | ValidateArgs | FanoutArgs | ServeArgs | ConfigArgs | AskArgs | RenderArgs | ConverseArgs;
+export interface AssessArgs {
+  command: "assess";
+  rubricPath: string;
+  evidenceRoot: string;
+  evidenceIndexPath: string;
+  outDir: string;
+  model: string;
+  maxTimeMs: number;
+  runId: RunId;
+  cardId: CardId;
+}
+
+export type ParsedArgs = RunArgs | BatchArgs | ValidateArgs | FanoutArgs | ServeArgs | ConfigArgs | AskArgs | RenderArgs | ConverseArgs | AssessArgs;
 
 export function parseArgs(argv: string[]): ParsedArgs {
   // Skip "bun" and script name. Strip `--verbose` here so it works on
@@ -198,9 +213,51 @@ export function parseArgs(argv: string[]): ParsedArgs {
       return parseRenderArgs(args.slice(1));
     case "converse":
       return parseConverseArgs(args.slice(1));
+    case "assess":
+      return parseAssessArgs(args.slice(1));
     default:
       throw new Error(`Unknown command: ${command}\n${usage()}`);
   }
+}
+
+function parseAssessArgs(args: string[]): AssessArgs {
+  const rubricPath = extractPositional(args);
+  if (!rubricPath) {
+    throw new Error("Missing rubric path\n\nUsage: gauntlet assess <rubric.md> [options]");
+  }
+  const flags = parseFlags(args);
+  rejectUnknownFlags(flags, ASSESS_ALLOWED, "assess");
+
+  for (const flag of ["evidence-root", "evidence-index", "out", "max-time"] as const) {
+    if (flags[flag] === undefined) throw new Error(`Missing required flag: --${flag}`);
+  }
+  if (!flags.model || flags.model.length !== 1) {
+    throw new Error("Missing required flag: --model agent=<model>");
+  }
+  const modelFlag = flags.model[0];
+  if (!modelFlag.startsWith("agent=") || modelFlag.length === "agent=".length) {
+    throw new Error("--model for assess must be exactly agent=<model>");
+  }
+
+  for (const flag of ["evidence-root", "evidence-index", "out"] as const) {
+    if (!isAbsolute(flags[flag]!)) throw new Error(`--${flag} requires an absolute path`);
+  }
+
+  const runId = parseRunId(basename(flags.out!));
+  if (!runId) throw new Error("--out basename must be a valid Gauntlet run id");
+  const cardId = asCardId(runId.split("_")[0]);
+
+  return {
+    command: "assess",
+    rubricPath,
+    evidenceRoot: flags["evidence-root"]!,
+    evidenceIndexPath: flags["evidence-index"]!,
+    outDir: flags.out!,
+    model: modelFlag.slice("agent=".length),
+    maxTimeMs: parseDuration(flags["max-time"]!),
+    runId,
+    cardId,
+  };
 }
 
 function parseConverseArgs(args: string[]): ConverseArgs {
@@ -574,6 +631,13 @@ function usage(): string {
   return `Usage: gauntlet <command> [options]
 
 Commands:
+  assess <rubric.md>        Assess retained evidence with a fresh model history
+    --evidence-root <dir>   (required) Absolute retained evidence directory
+    --evidence-index <path> (required) Absolute evidence index path
+    --out <dir>             (required) Exact assessment result directory
+    --model agent=<name>    (required) Assessment model
+    --max-time <duration>   (required) Assessment wall-clock budget
+
   converse <user-brief.md>  Run the simulated user against a prepared terminal subject
     --launcher <path>       (required) Absolute subject launcher path
     --workspace <path>      (required) Absolute scenario workspace path
