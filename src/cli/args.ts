@@ -1,6 +1,9 @@
 import type { CliArgsInput } from "../config";
-import { isAbsolute } from "node:path";
+import { basename, isAbsolute } from "node:path";
 import { ADAPTER_TYPES, isAdapterType, type AdapterType } from "../adapters/adapter";
+import { parseRunId } from "../util/id";
+import { parseDuration } from "../util/parse-duration";
+import { asCardId, type CardId, type RunId } from "../util/brands";
 
 /**
  * parseInt("abc", 10) returns NaN, which propagates through loadConfig
@@ -65,6 +68,9 @@ const SERVE_ALLOWED = new Set(["port", "project-dir", "state-dir", "chrome", "ta
 const CONFIG_ALLOWED = new Set(["json", "project-dir", "state-dir", "port", "chrome", "target", "model", "max-time", "reflection-interval", "viewport", "save-screencast"]);
 const ASK_ALLOWED = new Set(["turn", "model", "project-dir", "state-dir"]);
 const RENDER_ALLOWED = new Set(["project-dir", "state-dir"]);
+const CONVERSE_ALLOWED = new Set([
+  "launcher", "workspace", "out", "completion", "tmux-socket", "model", "max-time",
+]);
 
 function rejectUnknownFlags(
   flags: Record<string, unknown>,
@@ -145,7 +151,21 @@ export interface RenderArgs {
   cli: CliArgsInput;
 }
 
-export type ParsedArgs = RunArgs | BatchArgs | ValidateArgs | FanoutArgs | ServeArgs | ConfigArgs | AskArgs | RenderArgs;
+export interface ConverseArgs {
+  command: "converse";
+  briefPath: string;
+  launcherPath: string;
+  workspace: string;
+  outDir: string;
+  completionPath: string;
+  tmuxSocketPath: string;
+  model: string;
+  maxTimeMs: number;
+  runId: RunId;
+  cardId: CardId;
+}
+
+export type ParsedArgs = RunArgs | BatchArgs | ValidateArgs | FanoutArgs | ServeArgs | ConfigArgs | AskArgs | RenderArgs | ConverseArgs;
 
 export function parseArgs(argv: string[]): ParsedArgs {
   // Skip "bun" and script name. Strip `--verbose` here so it works on
@@ -176,9 +196,58 @@ export function parseArgs(argv: string[]): ParsedArgs {
       return parseAskArgs(args.slice(1));
     case "render":
       return parseRenderArgs(args.slice(1));
+    case "converse":
+      return parseConverseArgs(args.slice(1));
     default:
       throw new Error(`Unknown command: ${command}\n${usage()}`);
   }
+}
+
+function parseConverseArgs(args: string[]): ConverseArgs {
+  const briefPath = extractPositional(args);
+  if (!briefPath) {
+    throw new Error("Missing user brief path\n\nUsage: gauntlet converse <user-brief.md> [options]");
+  }
+  const flags = parseFlags(args);
+  rejectUnknownFlags(flags, CONVERSE_ALLOWED, "converse");
+
+  const required = [
+    "launcher", "workspace", "out", "completion", "tmux-socket", "max-time",
+  ] as const;
+  for (const flag of required) {
+    if (flags[flag] === undefined) throw new Error(`Missing required flag: --${flag}`);
+  }
+  if (!flags.model || flags.model.length !== 1) {
+    throw new Error("Missing required flag: --model agent=<model>");
+  }
+  const modelFlag = flags.model[0];
+  if (!modelFlag.startsWith("agent=") || modelFlag.length === "agent=".length) {
+    throw new Error("--model for converse must be exactly agent=<model>");
+  }
+
+  for (const flag of ["launcher", "workspace", "out", "completion", "tmux-socket"] as const) {
+    if (!isAbsolute(flags[flag]!)) {
+      throw new Error(`--${flag} requires an absolute path`);
+    }
+  }
+
+  const runId = parseRunId(basename(flags.out!));
+  if (!runId) throw new Error("--out basename must be a valid Gauntlet run id");
+  const cardId = asCardId(runId.split("_")[0]);
+
+  return {
+    command: "converse",
+    briefPath,
+    launcherPath: flags.launcher!,
+    workspace: flags.workspace!,
+    outDir: flags.out!,
+    completionPath: flags.completion!,
+    tmuxSocketPath: flags["tmux-socket"]!,
+    model: modelFlag.slice("agent=".length),
+    maxTimeMs: parseDuration(flags["max-time"]!),
+    runId,
+    cardId,
+  };
 }
 
 function parseConfigArgs(args: string[]): ConfigArgs {
@@ -505,6 +574,15 @@ function usage(): string {
   return `Usage: gauntlet <command> [options]
 
 Commands:
+  converse <user-brief.md>  Run the simulated user against a prepared terminal subject
+    --launcher <path>       (required) Absolute subject launcher path
+    --workspace <path>      (required) Absolute scenario workspace path
+    --out <dir>             (required) Conversation role evidence directory
+    --completion <path>     (required) Absolute conversation.json path
+    --tmux-socket <path>    (required) Absolute private tmux socket path
+    --model agent=<name>    (required) Conversation model
+    --max-time <duration>   (required) Conversation wall-clock budget
+
   run <story.md>    Run a story
     --target <url>       (required) Application under test
     --model agent=<name> Model for the agent (default: claude-sonnet-4-6)

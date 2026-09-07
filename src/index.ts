@@ -26,6 +26,13 @@ async function main() {
   const args = parseArgs(process.argv);
 
   switch (args.command) {
+    case "converse": {
+      const { conversationExitCode, converse } = await import("./cli/converse");
+      const record = await converse(args);
+      console.log(JSON.stringify(record));
+      process.exitCode = conversationExitCode(record);
+      break;
+    }
     case "run": {
       if (args.showPromptAndExit) {
         // Introspect path: render the composed system prompt with

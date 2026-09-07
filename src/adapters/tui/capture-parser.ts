@@ -114,9 +114,12 @@ function rgbHex(n: number): string {
 
 export class XtermCaptureParser implements CaptureParser {
   async parse(ansi: string, cols: number, rows: number): Promise<Capture> {
+    const lines = ansi.split("\n");
+    const capturedLineCount = lines.at(-1) === "" ? lines.length - 1 : lines.length;
+    const captureRows = Math.max(rows, capturedLineCount);
     const term = new Terminal({
       cols,
-      rows,
+      rows: captureRows,
       allowProposedApi: true,
       scrollback: 0,
     });
@@ -130,9 +133,8 @@ export class XtermCaptureParser implements CaptureParser {
     // iteration reposition for the next row. Colour state persists
     // across iterations because we never issue an SGR reset between
     // lines.
-    const lines = ansi.split("\n");
     let seq = "";
-    for (let i = 0; i < Math.min(lines.length, rows); i++) {
+    for (let i = 0; i < Math.min(lines.length, captureRows); i++) {
       // CSI y;1H — move cursor to row y (1-indexed), column 1.
       seq += `\x1b[${i + 1};1H` + lines[i];
     }
@@ -140,7 +142,7 @@ export class XtermCaptureParser implements CaptureParser {
 
     const buffer = term.buffer.active;
     const grid: Cell[][] = [];
-    for (let y = 0; y < rows; y++) {
+    for (let y = 0; y < captureRows; y++) {
       const row: Cell[] = [];
       const line = buffer.getLine(y);
       if (!line) {
@@ -192,7 +194,7 @@ export class XtermCaptureParser implements CaptureParser {
     }
     term.dispose();
 
-    return { cols, rows, cells: grid };
+    return { cols, rows: captureRows, cells: grid };
   }
 }
 

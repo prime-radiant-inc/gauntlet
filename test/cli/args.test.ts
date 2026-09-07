@@ -230,3 +230,64 @@ describe("--passes flag", () => {
     expect(() => parseArgs(["bun", "index.ts", "run", "story.md", "--target", "https://x", "--passes", "1.5"])).toThrow(/passes/i);
   });
 });
+
+describe("converse command", () => {
+  const argv = [
+    "bun", "index.ts", "converse", "/run/conversation-input/user-brief.md",
+    "--launcher", "/run/launch-subject",
+    "--workspace", "/run/workspace",
+    "--out", "/run/conversation-agent/card-001_20260907T120000Z_ab12",
+    "--completion", "/run/conversation.json",
+    "--tmux-socket", "/run/tmux.sock",
+    "--model", "agent=claude-sonnet-4-6",
+    "--max-time", "10m",
+  ];
+
+  test("parses the exact conversation role inputs and validates its run id", () => {
+    const args = parseArgs(argv);
+    expect(args).toEqual({
+      command: "converse",
+      briefPath: "/run/conversation-input/user-brief.md",
+      launcherPath: "/run/launch-subject",
+      workspace: "/run/workspace",
+      outDir: "/run/conversation-agent/card-001_20260907T120000Z_ab12",
+      completionPath: "/run/conversation.json",
+      tmuxSocketPath: "/run/tmux.sock",
+      model: "claude-sonnet-4-6",
+      maxTimeMs: 600_000,
+      runId: "card-001_20260907T120000Z_ab12",
+      cardId: "card-001",
+    });
+  });
+
+  test("requires every conversation role flag", () => {
+    for (const flag of [
+      "--launcher", "--workspace", "--out", "--completion",
+      "--tmux-socket", "--model", "--max-time",
+    ]) {
+      const index = argv.indexOf(flag);
+      const without = [...argv.slice(0, index), ...argv.slice(index + 2)];
+      expect(() => parseArgs(without)).toThrow(new RegExp(flag));
+    }
+  });
+
+  test("rejects unsupported flags and model roles", () => {
+    expect(() => parseArgs([...argv, "--credential", "secret"])).toThrow(/Unknown flag/);
+    const modelIndex = argv.indexOf("--model") + 1;
+    const withFanout = [...argv];
+    withFanout[modelIndex] = "fanout=claude-sonnet-4-6";
+    expect(() => parseArgs(withFanout)).toThrow(/agent=/);
+  });
+
+  test("rejects non-absolute process paths and malformed output run ids", () => {
+    for (const flag of ["--launcher", "--workspace", "--completion", "--tmux-socket"]) {
+      const invalid = [...argv];
+      invalid[invalid.indexOf(flag) + 1] = "relative/path";
+      expect(() => parseArgs(invalid)).toThrow(/absolute/i);
+    }
+
+    const invalidOut = [...argv];
+    invalidOut[invalidOut.indexOf("--out") + 1] = "/run/conversation-agent/not-a-run-id";
+    expect(() => parseArgs(invalidOut)).toThrow(/run id/i);
+  });
+});
