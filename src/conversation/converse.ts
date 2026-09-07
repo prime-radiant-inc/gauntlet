@@ -144,15 +144,15 @@ function thinkingBlocks(response: AgentResponse): Array<{ text: string; signatur
 }
 
 function writeRecord(path: string, value: ConversationRecord): void {
-  const record = validateConversationRecord(value);
   const temporary = `${path}.tmp`;
   try {
+    const record = validateConversationRecord(value);
     writeFileSync(temporary, `${JSON.stringify(record)}\n`);
     renameSync(temporary, path);
   } catch (error) {
     try { unlinkSync(temporary); } catch { /* no temporary file to remove */ }
     const reason = error instanceof Error ? error.message : String(error);
-    const kind = record.status === "completed" ? "completion" : "record";
+    const kind = value.status === "completed" ? "completion" : "record";
     throw new ConversationPersistenceError(`Failed to persist conversation ${kind}: ${reason}`);
   }
 }

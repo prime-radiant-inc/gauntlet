@@ -416,6 +416,51 @@ describe("runConversation", () => {
     }
   });
 
+  test("treats invalid generated completion evidence as an instrument error", async () => {
+    const adapter = new ScriptedAdapter("Delivered: invalid path");
+    const client = new ScriptedClient([
+      response([{ id: "screen", name: "read_screen", arguments: {} }]),
+      (messages) => {
+        const { capture } = captureFromHistory(messages);
+        return response([
+          { id: "finish", name: "finish_conversation", arguments: {
+            endpoint: "delivery", reason: "done", capture, quote: "Delivered: invalid path",
+          } },
+          { id: "late-input", name: "type_and_submit", arguments: { text: "touch forbidden" } },
+        ]);
+      },
+    ]);
+    const root = mkdtempSync(join(tmpdir(), "conversation-invalid-record-"));
+    const outDir = join(root, "outside", "conversation-test_20260907T120000Z_ab12");
+    const workspace = join(root, "workspace");
+    const completionPath = join(root, "run", "conversation.json");
+    mkdirSync(outDir, { recursive: true });
+    mkdirSync(workspace);
+    mkdirSync(dirname(completionPath));
+    const logger = new EvidenceLogger(outDir);
+    const runId = makeRunId("conversation-test");
+    startLogger(logger, runId, outDir);
+    try {
+      await expect(runConversation({
+        brief: "Ask for delivery.",
+        adapter,
+        workspace,
+        outDir,
+        completionPath,
+        client,
+        logger,
+        runId,
+        maxTimeMs: 5_000,
+      })).rejects.toThrow(/persist conversation completion/i);
+      expect(adapter.inputFinished).toBe(true);
+      expect(adapter.inputs).toEqual([]);
+      expect(adapter.closed).toBe(1);
+      expect(existsSync(completionPath)).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("reads workspace files through the scoped file tool", async () => {
     const adapter = new ScriptedAdapter("Delivered: used the file");
     const client = new ScriptedClient([
