@@ -6,8 +6,8 @@ import { validateToolArgs } from "../../agent/validators";
 import type { CredentialResolverConfig, Viewport } from "../../config";
 import { defaultCaptureParser, type CaptureParser } from "./capture-parser";
 import { spawnSync } from "../../runtime/spawn";
-import { mkdirSync } from "fs";
-import { join } from "path";
+import { accessSync, constants, mkdirSync, statSync, writeFileSync } from "fs";
+import { isAbsolute, join } from "path";
 import { runInputGuard, type InputGuard } from "./input-guard";
 import { listDescendants } from "../../runtime/process-tree";
 
@@ -73,30 +73,42 @@ export interface TUIAdapterOptions {
    * Default 3000.
    */
   descendantGraceMs?: number;
+  preparedSubject?: {
+    launcherPath: string;
+    workspace: string;
+    socketPath: string;
+  };
 }
 
 export class TUIAdapter implements Adapter {
   readonly name = "tui";
   private _sessionName: string | null = null;
   private _socket: string | null = null;
-  private shared: SharedTools;
+  private shared: SharedTools | null;
   private captureParser: CaptureParser;
   /** Lazy cache of tool name → parameter schema for O(1) validation. */
   private toolSchemas: Map<string, ToolDefinition["parameters"]> | null = null;
   private runDir: string | undefined;
   private logger: EvidenceLogger | undefined;
-  private bashPid: number | null = null;
+  private panePid: number | null = null;
   private descendantGraceMs: number;
+  private readonly preparedSubject: TUIAdapterOptions["preparedSubject"];
+  private preparedState: "new" | "started" | "closed" = "new";
+  private inputFinished = false;
+  private subjectExited = false;
 
   private readonly inputGuard?: InputGuard;
 
   constructor(options?: TUIAdapterOptions) {
     this.inputGuard = options?.inputGuard;
-    this.shared = buildSharedTools({
-      contextRoot: options?.contextRoot,
-      credentialResolver: options?.credentialResolver,
-      cwd: options?.runDir ? join(options.runDir, "scratch") : undefined,
-    });
+    this.preparedSubject = options?.preparedSubject;
+    this.shared = this.preparedSubject
+      ? null
+      : buildSharedTools({
+          contextRoot: options?.contextRoot,
+          credentialResolver: options?.credentialResolver,
+          cwd: options?.runDir ? join(options.runDir, "scratch") : undefined,
+        });
     this.captureParser = options?.captureParser ?? defaultCaptureParser;
     this.runDir = options?.runDir;
     this.logger = options?.logger;
@@ -123,33 +135,78 @@ export class TUIAdapter implements Adapter {
    */
   private tmux(...args: string[]): string[] {
     if (!this._socket) throw new Error("Session not started");
-    return ["tmux", "-L", this._socket, ...args];
+    return ["tmux", this.preparedSubject ? "-S" : "-L", this._socket, ...args];
   }
 
   async start(_target: string): Promise<void> {
+    if (this.preparedSubject && this.preparedState !== "new") {
+      throw new Error("TUIAdapter: a prepared subject adapter cannot be started more than once");
+    }
     if (!this.runDir) {
       throw new Error("TUIAdapter: runDir is required to start a session");
     }
+    if (this.preparedSubject) this.validatePreparedSubject();
+
     const id = `gauntlet-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     this._sessionName = id;
-    this._socket = id;
+    this._socket = this.preparedSubject?.socketPath ?? id;
+    if (this.preparedSubject) this.preparedState = "started";
     const scratch = join(this.runDir, "scratch");
     mkdirSync(scratch, { recursive: true });
 
-    const create = spawnSync(this.tmux(
-      "new-session", "-d", "-s", id,
-      "-x", String(TUI_GRID.width),
-      "-y", String(TUI_GRID.height),
-      "-c", scratch,
-      "bash", "--norc", "--noprofile", "-i",
-    ));
+    const create = this.preparedSubject
+      ? this.startPreparedSession(id)
+      : spawnSync(this.tmux(
+          "new-session", "-d", "-s", id,
+          "-x", String(TUI_GRID.width),
+          "-y", String(TUI_GRID.height),
+          "-c", scratch,
+          "bash", "--norc", "--noprofile", "-i",
+        ));
     if (create.exitCode !== 0) {
       throw new Error(
         `Failed to start tmux session: ${new TextDecoder().decode(create.stderr)}`,
       );
     }
 
-    this.bashPid = await this.readPanePid(id);
+    this.panePid = await this.readPanePid(id);
+  }
+
+  private validatePreparedSubject(): void {
+    const prepared = this.preparedSubject!;
+    if (!isAbsolute(prepared.launcherPath)) {
+      throw new Error("TUIAdapter: prepared launcher must be an absolute path");
+    }
+    try {
+      accessSync(prepared.launcherPath, constants.X_OK);
+      if (!statSync(prepared.launcherPath).isFile()) throw new Error("not a file");
+    } catch {
+      throw new Error(`TUIAdapter: prepared launcher is not executable: ${prepared.launcherPath}`);
+    }
+    if (!isAbsolute(prepared.workspace)) {
+      throw new Error("TUIAdapter: prepared workspace must be an absolute path");
+    }
+    try {
+      if (!statSync(prepared.workspace).isDirectory()) throw new Error("not a directory");
+    } catch {
+      throw new Error(`TUIAdapter: prepared workspace is not a directory: ${prepared.workspace}`);
+    }
+  }
+
+  private startPreparedSession(id: string) {
+    const prepared = this.preparedSubject!;
+    const configPath = join(this.runDir!, "prepared-tmux.conf");
+    writeFileSync(configPath, "set-option -g remain-on-exit on\n");
+    const tmux = this.tmux();
+    return spawnSync([
+      ...tmux,
+      "-f", configPath,
+      "new-session", "-d", "-s", id,
+      "-x", String(TUI_GRID.width),
+      "-y", String(TUI_GRID.height),
+      "-c", prepared.workspace,
+      "/usr/bin/env", "--", prepared.launcherPath,
+    ]);
   }
 
   private async readPanePid(sessionId: string): Promise<number> {
@@ -168,12 +225,14 @@ export class TUIAdapter implements Adapter {
   }
 
   async readScreen(): Promise<string> {
+    const includeHistory = this.preparedSubject && await this.hasSubjectExited();
     const result = spawnSync(this.tmux(
       "capture-pane",
       "-t",
       this.sessionName,
       "-p",
       "-e",
+      ...(includeHistory ? ["-S", "-"] : []),
     ));
 
     if (result.exitCode !== 0) {
@@ -185,6 +244,7 @@ export class TUIAdapter implements Adapter {
   }
 
   async type(text: string): Promise<void> {
+    await this.ensureInputOpen();
     this.guard("type", { text });
     const result = spawnSync(this.tmux(
       "send-keys",
@@ -201,6 +261,7 @@ export class TUIAdapter implements Adapter {
   }
 
   async press(key: string): Promise<void> {
+    await this.ensureInputOpen();
     this.guard("press", { key });
     const mapped = KEY_MAP[key];
     if (!mapped) throw new Error(`Unknown key: ${key}. Available: ${AVAILABLE_KEYS}`);
@@ -231,6 +292,30 @@ export class TUIAdapter implements Adapter {
     await this.press("Enter");
   }
 
+  async hasSubjectExited(): Promise<boolean> {
+    if (this.subjectExited) return true;
+    if (!this._sessionName) return true;
+    const result = spawnSync(this.tmux(
+      "display-message", "-p", "-t", this.sessionName, "#{pane_dead}",
+    ));
+    if (result.exitCode !== 0) {
+      this.subjectExited = true;
+      return true;
+    }
+    const exited = new TextDecoder().decode(result.stdout).trim() === "1";
+    if (exited) this.subjectExited = true;
+    return exited;
+  }
+
+  finishInput(): void {
+    this.inputFinished = true;
+  }
+
+  private async ensureInputOpen(): Promise<void> {
+    if (this.inputFinished) throw new Error("TUIAdapter: terminal input is closed");
+    if (await this.hasSubjectExited()) throw new Error("TUIAdapter: terminal subject has exited");
+  }
+
   private guard(name: string, args: Record<string, unknown>, logger = this.logger): void {
     if (!this.inputGuard || (name === "press" && ["Escape", "Ctrl+C"].includes(String(args.key)))) return;
     runInputGuard(this.inputGuard, { name, args }, logger);
@@ -253,10 +338,13 @@ export class TUIAdapter implements Adapter {
   }
 
   async close(): Promise<void> {
-    if (!this._sessionName) return;
+    if (!this._sessionName) {
+      if (this.preparedSubject) this.preparedState = "closed";
+      return;
+    }
     const sessionName = this._sessionName;
-    const descendants = this.bashPid !== null
-      ? listDescendants(this.bashPid)
+    const descendants = this.panePid !== null
+      ? listDescendants(this.panePid)
       : [];
 
     try {
@@ -295,7 +383,8 @@ export class TUIAdapter implements Adapter {
 
     this._sessionName = null;
     this._socket = null;
-    this.bashPid = null;
+    this.panePid = null;
+    if (this.preparedSubject) this.preparedState = "closed";
   }
 
   isMutatingTool(name: string): boolean {
@@ -347,7 +436,7 @@ export class TUIAdapter implements Adapter {
         },
       },
     ];
-    tools.push(...this.shared.definitions());
+    if (this.shared) tools.push(...this.shared.definitions());
     return tools;
   }
 
@@ -372,10 +461,11 @@ export class TUIAdapter implements Adapter {
       }
     }
 
-    if (name === "bash") this.guard(name, args, logger);
-
-    if (this.shared.canExecute(name)) {
-      return this.shared.execute(name, args, logger);
+    if (this.shared) {
+      if (name === "bash") this.guard(name, args, logger);
+      if (this.shared.canExecute(name)) {
+        return this.shared.execute(name, args, logger);
+      }
     }
 
     switch (name) {
