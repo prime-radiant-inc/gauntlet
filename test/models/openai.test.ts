@@ -30,6 +30,21 @@ describe("OpenAI message helpers (Responses API shape)", () => {
     });
   });
 
+  test("marked errors preserve the exact call id and text in OpenAI output", () => {
+    const calls = [{ id: "call_rejected", name: "report_result", arguments: {} }];
+    const results = [{
+      kind: "text" as const,
+      text: "Error: report_result rejected: reasoning is required",
+      isError: true,
+    }];
+
+    expect(openaiToolResultMessages(calls, results)).toEqual([{
+      type: "function_call_output",
+      call_id: "call_rejected",
+      output: "Error: report_result rejected: reasoning is required",
+    }]);
+  });
+
   test("toolResultMessages appends a user message with images when results contain them", () => {
     const calls = [
       { id: "call_abc", name: "screenshot", arguments: {} },

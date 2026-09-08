@@ -178,6 +178,7 @@ export function anthropicToolResultMessages(
       return {
         type: "tool_result",
         tool_use_id: call.id,
+        ...(result.isError === true ? { is_error: true } : {}),
         content: [
           {
             type: "image",
@@ -194,6 +195,7 @@ export function anthropicToolResultMessages(
     return {
       type: "tool_result",
       tool_use_id: call.id,
+      ...(result.isError === true ? { is_error: true } : {}),
       content: result.text ?? "",
     };
   });

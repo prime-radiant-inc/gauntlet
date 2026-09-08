@@ -253,7 +253,7 @@ export async function runAssessment(options: AssessOptions): Promise<VetResult> 
         error = true;
         result = textResult(`Error: ${caught instanceof Error ? caught.message : String(caught)}`);
       }
-      results.push(result);
+      results.push(error ? { ...result, isError: true } : result);
       logger.logToolResult({
         turn: turns,
         toolUseId: call.id,
