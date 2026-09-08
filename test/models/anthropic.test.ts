@@ -217,6 +217,37 @@ describe("anthropicToolResultMessages", () => {
       ],
     });
   });
+
+  test("marks text and image tool failures for Anthropic", () => {
+    const calls = [
+      { id: "toolu_text_error", name: "read_evidence", arguments: {} },
+      { id: "toolu_image_error", name: "screenshot", arguments: {} },
+    ];
+    const results = [
+      { kind: "text" as const, text: "Error: evidence is unavailable", isError: true },
+      {
+        kind: "image" as const,
+        text: "Error: screenshot analysis failed",
+        image: { data: "aGVsbG8=", mediaType: "image/png" },
+        isError: true,
+      },
+    ];
+
+    const messages = anthropicToolResultMessages(calls, results);
+    const content = (messages[0] as { content: Array<Record<string, unknown>> }).content;
+
+    expect(content[0]).toMatchObject({
+      type: "tool_result",
+      tool_use_id: "toolu_text_error",
+      content: "Error: evidence is unavailable",
+      is_error: true,
+    });
+    expect(content[1]).toMatchObject({
+      type: "tool_result",
+      tool_use_id: "toolu_image_error",
+      is_error: true,
+    });
+  });
 });
 
 describe("convertResponse stop_reason pass-through", () => {

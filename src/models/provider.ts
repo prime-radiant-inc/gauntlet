@@ -41,6 +41,12 @@ export interface ToolCall {
 interface ToolResultBase {
   text: string;
   /**
+   * Whether the tool invocation failed. Provider codecs use this typed
+   * execution status when their protocol supports failed tool results;
+   * payload text alone is not an error signal.
+   */
+  isError?: boolean;
+  /**
    * Optional alternative representation used for the run transcript /
    * evidence log. When set, `text` still goes to the agent's live
    * context (the agent must see the real value to type or paste it),

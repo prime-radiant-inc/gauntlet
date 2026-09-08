@@ -19,6 +19,7 @@ import { runAssessment } from "../../src/assessment/assess";
 import { assessmentExitCode } from "../../src/cli/assess";
 import { EvidenceLogger } from "../../src/evidence/logger";
 import { parseStoryCard, type StoryCard } from "../../src/format/story-card";
+import { createAnthropicClient } from "../../src/models/anthropic";
 import type {
   AgentResponse,
   LLMClient,
@@ -68,6 +69,7 @@ class ScriptedClient implements LLMClient {
   readonly histories: unknown[][] = [];
   readonly toolLists: ToolDefinition[][] = [];
   readonly systemPrompts: string[] = [];
+  readonly toolResults: ToolResult[][] = [];
   private index = 0;
 
   constructor(private readonly replies: Reply[]) {}
@@ -86,6 +88,7 @@ class ScriptedClient implements LLMClient {
   }
 
   toolResultMessages(calls: ToolCall[], results: ToolResult[]): unknown[] {
+    this.toolResults.push(results.map((result) => ({ ...result })));
     return calls.map((call, index) => ({
       role: "tool_result",
       tool_call_id: call.id,
@@ -125,7 +128,7 @@ function startLogger(logger: EvidenceLogger, runId: RunId, outDir: string): void
   });
 }
 
-function fixture(client: ScriptedClient, files: string[] = ["visible/001.txt"]) {
+function fixture(client: LLMClient, files: string[] = ["visible/001.txt"]) {
   const root = mkdtempSync(join(tmpdir(), "assessment-role-"));
   const evidenceRoot = join(root, "evidence");
   const runId = makeRunId(rubric().id);
@@ -164,6 +167,161 @@ function toolResultText(history: unknown[], callId: string): string {
 }
 
 describe("runAssessment", () => {
+  test("actual Anthropic SDK carries a rejected report as a failed tool result before accepting a valid correction", async () => {
+    const originalFetch = globalThis.fetch;
+    const originalApiKey = process.env.ANTHROPIC_API_KEY;
+    const originalBaseUrl = process.env.ANTHROPIC_BASE_URL;
+    const originalClaudeOAuth = process.env.CLAUDE_CODE_OAUTH_TOKEN;
+    const originalAnthropicOAuth = process.env.ANTHROPIC_AUTH_TOKEN;
+    const requestBodies: Array<Record<string, any>> = [];
+    const malformedArguments = {
+      status: "pass",
+      summary: "Rejected report missing required reasoning",
+      observations: [],
+      criteria: [{
+        criterion: "Policy handling",
+        verdict: "pass",
+        evidence: "visible/001.txt: refusal observed",
+      }],
+    };
+    const correctedArguments = {
+      status: "fail",
+      summary: "Valid corrected report",
+      reasoning: "The retained evidence does not satisfy the criterion.",
+      observations: [],
+      criteria: [{
+        criterion: "Policy handling",
+        verdict: "fail",
+        evidence: "visible/001.txt: the recorded behavior contradicted the criterion",
+      }],
+    };
+    let fx: ReturnType<typeof fixture> | undefined;
+
+    try {
+      process.env.ANTHROPIC_API_KEY = "offline-test-key";
+      process.env.ANTHROPIC_BASE_URL = "http://127.0.0.1:1";
+      delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
+      delete process.env.ANTHROPIC_AUTH_TOKEN;
+      globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+        const request = new Request(input, init);
+        const url = new URL(request.url);
+        expect(url.origin).toBe("http://127.0.0.1:1");
+        expect(url.pathname).toBe("/v1/messages");
+        const body = await request.json() as Record<string, any>;
+        requestBodies.push(body);
+        const index = requestBodies.length - 1;
+        expect(index).toBeLessThan(2);
+        const args = index === 0 ? malformedArguments : correctedArguments;
+        return new Response(JSON.stringify({
+          id: `msg_offline_${index}`,
+          type: "message",
+          role: "assistant",
+          model: "claude-sonnet-5",
+          content: [{
+            type: "tool_use",
+            id: index === 0 ? "toolu_rejected" : "toolu_corrected",
+            name: "report_result",
+            input: args,
+          }],
+          stop_reason: "tool_use",
+          stop_sequence: null,
+          usage: {
+            input_tokens: index === 0 ? 11 : 13,
+            output_tokens: index === 0 ? 7 : 9,
+            cache_creation_input_tokens: index === 0 ? 5 : 2,
+            cache_read_input_tokens: index === 0 ? 3 : 4,
+          },
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }) as typeof fetch;
+
+      const client = createAnthropicClient("claude-sonnet-5");
+      fx = fixture(client);
+      const result = await fx.run();
+
+      expect(requestBodies).toHaveLength(2);
+      const reportTool = requestBodies[0].tools.find((tool: any) => tool.name === "report_result");
+      expect(reportTool.input_schema.required).toEqual([
+        "status", "summary", "observations", "reasoning",
+      ]);
+      expect(requestBodies[1].messages).toHaveLength(3);
+      expect(requestBodies[1].messages[1].content[0].input).toEqual(malformedArguments);
+      expect(requestBodies[1].messages[2].content[0]).toMatchObject({
+        type: "tool_result",
+        tool_use_id: "toolu_rejected",
+        content: "Error: report_result rejected: reasoning: expected string, got undefined",
+        is_error: true,
+      });
+      expect(result.status).toBe("fail");
+      expect(result.summary).toBe(correctedArguments.summary);
+      expect(result.usage).toEqual({
+        inputTokens: 24,
+        outputTokens: 16,
+        cacheCreationInputTokens: 7,
+        cacheReadInputTokens: 7,
+        turns: 2,
+      });
+      const usageRows = readFileSync(join(fx.outDir, "usage.jsonl"), "utf8").trim().split("\n");
+      expect(usageRows).toHaveLength(2);
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (originalApiKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+      else process.env.ANTHROPIC_API_KEY = originalApiKey;
+      if (originalBaseUrl === undefined) delete process.env.ANTHROPIC_BASE_URL;
+      else process.env.ANTHROPIC_BASE_URL = originalBaseUrl;
+      if (originalClaudeOAuth === undefined) delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
+      else process.env.CLAUDE_CODE_OAUTH_TOKEN = originalClaudeOAuth;
+      if (originalAnthropicOAuth === undefined) delete process.env.ANTHROPIC_AUTH_TOKEN;
+      else process.env.ANTHROPIC_AUTH_TOKEN = originalAnthropicOAuth;
+      if (fx) rmSync(fx.root, { recursive: true, force: true });
+    }
+  });
+
+  test("classifies scoped-read, unavailable-tool, and malformed-report results without inspecting content", async () => {
+    const malformed = {
+      id: "malformed-report",
+      name: "report_result",
+      arguments: {
+        status: "pass",
+        summary: "Missing reasoning",
+        observations: [],
+        criteria: [{
+          criterion: "Policy handling",
+          verdict: "pass",
+          evidence: "visible/001.txt: refusal observed",
+        }],
+      },
+    };
+    const client = new ScriptedClient([
+      response([
+        { id: "read-success", name: "read_evidence", arguments: { path: "visible/001.txt" } },
+        { id: "read-unlisted", name: "read_evidence", arguments: { path: "private-history.jsonl" } },
+        { id: "unavailable", name: "bash", arguments: { command: "env" } },
+        malformed,
+      ]),
+      report("fail"),
+    ]);
+    const fx = fixture(client);
+    writeFileSync(
+      join(fx.evidenceRoot, "visible", "001.txt"),
+      "Error: this is retained evidence text, not a tool failure",
+    );
+    try {
+      await fx.run();
+      const results = client.toolResults[0] as Array<ToolResult & { isError?: boolean }>;
+      expect(results).toHaveLength(4);
+      expect(results[0].text).toContain("Error: this is retained evidence text");
+      expect(results[0].isError).toBeUndefined();
+      expect(results[1].isError).toBe(true);
+      expect(results[2].isError).toBe(true);
+      expect(results[3]).toMatchObject({
+        text: "Error: report_result rejected: reasoning: expected string, got undefined",
+        isError: true,
+      });
+    } finally {
+      rmSync(fx.root, { recursive: true, force: true });
+    }
+  });
+
   test("starts from the private rubric and index with only evidence assessment tools", async () => {
     const runAgentSpy = jest.spyOn(agentModule, "runAgent");
     const sharedToolsSpy = jest.spyOn(sharedToolsModule, "buildSharedTools");
