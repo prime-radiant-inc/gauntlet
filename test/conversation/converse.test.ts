@@ -91,7 +91,7 @@ function captureFromHistory(messages: unknown[]): { capture: string; screen: str
   throw new Error("No returned capture in scripted history");
 }
 
-function finishFromLatestCapture(endpoint: "delivery" | "refusal", quote: string): Reply {
+function finishFromLatestCapture(endpoint: "delivery" | "refusal" | "error", quote: string): Reply {
   return (messages) => {
     const { capture } = captureFromHistory(messages);
     return response([{
@@ -336,6 +336,34 @@ describe("runConversation", () => {
       expect(record.evidence?.quote).toBe("Delivered: actual answer");
       expect(JSON.stringify(client.histories[1])).toContain("returned capture");
       expect(JSON.stringify(client.histories[3])).toContain("quote");
+    } finally {
+      rmSync(fx.root, { recursive: true, force: true });
+    }
+  });
+
+  test.each([
+    ["delivery", "completed", "delivery"],
+    ["refusal", "completed", "refusal"],
+    ["error", "errored", null],
+  ] as const)("persists the explicit %s endpoint through finish_conversation", async (
+    endpoint,
+    expectedStatus,
+    expectedEndpoint,
+  ) => {
+    const adapter = new ScriptedAdapter(`Visible ${endpoint}`);
+    const client = new ScriptedClient([
+      response([{ id: "screen", name: "read_screen", arguments: {} }]),
+      finishFromLatestCapture(endpoint, `Visible ${endpoint}`),
+    ]);
+    const fx = fixture(adapter, client);
+    try {
+      const record = await fx.run();
+      expect(record.status).toBe(expectedStatus);
+      expect(record.endpoint).toBe(expectedEndpoint);
+      expect(record.reason).toBe("The subject visibly finished.");
+      expect(record.evidence?.quote).toBe(`Visible ${endpoint}`);
+      expect(adapter.inputFinished).toBe(true);
+      expect(JSON.parse(readFileSync(fx.completionPath, "utf8"))).toEqual(record);
     } finally {
       rmSync(fx.root, { recursive: true, force: true });
     }
