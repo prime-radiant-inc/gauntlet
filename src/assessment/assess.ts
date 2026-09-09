@@ -1,11 +1,5 @@
 import { basename } from "node:path";
-import { REPORT_TOOL } from "../agent/agent";
-import {
-  checkCriteriaConsistency,
-  parseReportCriteria,
-  parseReportResult,
-  validateToolArgs,
-} from "../agent/validators";
+import { validateToolArgs } from "../agent/validators";
 import {
   readEvidenceFile,
   validateEvidenceIndex,
@@ -26,6 +20,7 @@ import {
 import { RESULT_SCHEMA_VERSION, type VetResult } from "../types";
 import type { RunId } from "../util/brands";
 import { parseRunId } from "../util/id";
+import { ASSESSMENT_REPORT_TOOL, parseAssessmentReport } from "./report";
 
 export type AssessOptions = {
   rubric: StoryCard;
@@ -54,7 +49,7 @@ const READ_EVIDENCE_TOOL: ToolDefinition = {
   },
 };
 
-const TOOLS = [READ_EVIDENCE_TOOL, REPORT_TOOL];
+const TOOLS = [READ_EVIDENCE_TOOL, ASSESSMENT_REPORT_TOOL];
 
 function initialMessage(rubric: StoryCard, index: EvidenceIndex): string {
   const paths = index.files.length > 0
@@ -103,6 +98,9 @@ export async function runAssessment(options: AssessOptions): Promise<VetResult> 
   }
   if (runId.split("_")[0] !== rubric.id) {
     throw new Error("Assessment runId scenario must match the rubric card id");
+  }
+  if (rubric.acceptanceCriteria.length === 0) {
+    throw new Error("Assessment rubric must declare at least one acceptance criterion");
   }
   validateEvidenceIndex(evidenceRoot, evidenceIndex);
 
@@ -169,28 +167,11 @@ export async function runAssessment(options: AssessOptions): Promise<VetResult> 
   function validateReport(call: ToolCall):
     | { ok: true; result: VetResult }
     | { ok: false; result: ToolResult } {
-    const parsed = parseReportResult(call.arguments);
+    const parsed = parseAssessmentReport(call.arguments, rubric.acceptanceCriteria);
     if (!parsed.ok) {
       return { ok: false, result: textResult(`Error: report_result rejected: ${parsed.reason}`) };
     }
-    const criteria = parseReportCriteria(call.arguments.criteria, rubric.acceptanceCriteria);
-    if (!criteria.ok) {
-      return { ok: false, result: textResult(`Error: report_result rejected: ${criteria.reason}`) };
-    }
-    const consistency = checkCriteriaConsistency(parsed.value.status, criteria.value);
-    if (!consistency.ok) {
-      return { ok: false, result: textResult(`Error: report_result rejected: ${consistency.reason}`) };
-    }
-    return {
-      ok: true,
-      result: finish({
-        status: parsed.value.status,
-        summary: parsed.value.summary,
-        reasoning: parsed.value.reasoning,
-        observations: parsed.value.observations,
-        criteria: criteria.value.length > 0 ? criteria.value : undefined,
-      }),
-    };
+    return { ok: true, result: finish(parsed.value) };
   }
 
   function dispatch(call: ToolCall): ToolResult {

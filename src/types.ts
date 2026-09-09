@@ -65,8 +65,8 @@ export interface Observation {
  * observed — a quote plus its source (screen text, file path, log line,
  * command output) — so a verdict can be checked against the artifacts
  * instead of trusted on recollection. Entries map to the card's
- * criteria by position; `criterion` is the agent's restatement,
- * recorded for readability.
+ * criteria by position. QA uses the model's restatement for `criterion`;
+ * assessment attaches the canonical criterion text.
  */
 export interface CriterionVerdict {
   criterion: string;
