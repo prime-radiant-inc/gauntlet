@@ -2,6 +2,12 @@ import OpenAI from "openai";
 import type { LLMClient, ToolDefinition, AgentResponse, StopReason, ToolCall, ToolResult } from "./provider";
 import { withLlmErrorSanitization } from "../util/sanitize-error";
 
+const MAX_PROMPT_CACHE_KEY_LENGTH = 64;
+
+export function promptCacheKey(runId: string): string {
+  return runId.slice(0, MAX_PROMPT_CACHE_KEY_LENGTH);
+}
+
 export function createOpenAIClient(model: string): LLMClient {
   if (!process.env.OPENAI_API_KEY) {
     throw new Error(
@@ -29,7 +35,7 @@ export function createOpenAIClient(model: string): LLMClient {
           // across tool-call turns and keeps the cached prefix intact.
           include: ["reasoning.encrypted_content"],
           store: false,
-          ...(requestContext?.runId && { prompt_cache_key: requestContext.runId }),
+          ...(requestContext?.runId && { prompt_cache_key: promptCacheKey(requestContext.runId) }),
         }),
       );
       return convertResponse(response);

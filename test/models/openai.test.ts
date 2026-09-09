@@ -5,7 +5,19 @@ import {
   openaiToolResultMessages,
   convertResponse,
   deriveStopReason,
+  promptCacheKey,
 } from "../../src/models/openai";
+
+describe("promptCacheKey", () => {
+  test("preserves run IDs at or below the API limit", () => {
+    expect(promptCacheKey("short-run-id")).toBe("short-run-id");
+    expect(promptCacheKey("x".repeat(64))).toBe("x".repeat(64));
+  });
+
+  test("truncates run IDs above the API limit", () => {
+    expect(promptCacheKey("x".repeat(66))).toBe("x".repeat(64));
+  });
+});
 
 describe("OpenAI message helpers (Responses API shape)", () => {
   test("toolResultMessages emits one function_call_output per call", () => {
