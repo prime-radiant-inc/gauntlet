@@ -241,6 +241,7 @@ describe("converse command", () => {
     "--tmux-socket", "/run/tmux.sock",
     "--model", "agent=claude-sonnet-4-6",
     "--max-time", "10m",
+    "--startup", "claude",
   ];
 
   test("parses the exact conversation role inputs and validates its run id", () => {
@@ -255,6 +256,7 @@ describe("converse command", () => {
       tmuxSocketPath: "/run/tmux.sock",
       model: "claude-sonnet-4-6",
       maxTimeMs: 600_000,
+      startup: "claude",
       runId: "card-001_20260907T120000Z_ab12",
       cardId: "card-001",
     });
@@ -277,6 +279,9 @@ describe("converse command", () => {
     const withFanout = [...argv];
     withFanout[modelIndex] = "fanout=claude-sonnet-4-6";
     expect(() => parseArgs(withFanout)).toThrow(/agent=/);
+    const unsupportedStartup = [...argv];
+    unsupportedStartup[unsupportedStartup.indexOf("claude")] = "codex";
+    expect(() => parseArgs(unsupportedStartup)).toThrow(/--startup.*claude/i);
   });
 
   test("rejects non-absolute process paths and malformed output run ids", () => {

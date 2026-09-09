@@ -69,7 +69,7 @@ const CONFIG_ALLOWED = new Set(["json", "project-dir", "state-dir", "port", "chr
 const ASK_ALLOWED = new Set(["turn", "model", "project-dir", "state-dir"]);
 const RENDER_ALLOWED = new Set(["project-dir", "state-dir"]);
 const CONVERSE_ALLOWED = new Set([
-  "launcher", "workspace", "out", "completion", "tmux-socket", "model", "max-time",
+  "launcher", "workspace", "out", "completion", "tmux-socket", "model", "max-time", "startup",
 ]);
 const ASSESS_ALLOWED = new Set([
   "evidence-root", "evidence-index", "out", "model", "max-time",
@@ -164,6 +164,7 @@ export interface ConverseArgs {
   tmuxSocketPath: string;
   model: string;
   maxTimeMs: number;
+  startup?: "claude";
   runId: RunId;
   cardId: CardId;
 }
@@ -291,6 +292,9 @@ function parseConverseArgs(args: string[]): ConverseArgs {
   const runId = parseRunId(basename(flags.out!));
   if (!runId) throw new Error("--out basename must be a valid Gauntlet run id");
   const cardId = asCardId(runId.split("_")[0]);
+  if (flags.startup !== undefined && flags.startup !== "claude") {
+    throw new Error('--startup for converse must be exactly "claude"');
+  }
 
   return {
     command: "converse",
@@ -302,6 +306,7 @@ function parseConverseArgs(args: string[]): ConverseArgs {
     tmuxSocketPath: flags["tmux-socket"]!,
     model: modelFlag.slice("agent=".length),
     maxTimeMs: parseDuration(flags["max-time"]!),
+    startup: flags.startup as "claude" | undefined,
     runId,
     cardId,
   };
@@ -646,6 +651,7 @@ Commands:
     --tmux-socket <path>    (required) Absolute private tmux socket path
     --model agent=<name>    (required) Conversation model
     --max-time <duration>   (required) Conversation wall-clock budget
+    --startup claude        Wait for the configured Claude composer before starting the simulated user
 
   run <story.md>    Run a story
     --target <url>       (required) Application under test

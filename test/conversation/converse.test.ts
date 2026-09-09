@@ -125,8 +125,12 @@ class ScriptedAdapter extends TUIAdapter {
   closed = 0;
   inputFinished = false;
   closeError: Error | null = null;
+  subjectExited = false;
+  screenReads = 0;
+  private currentScreen: string;
+  private readonly screens: string[];
 
-  constructor(readonly screen: string) {
+  constructor(screen: string | string[]) {
     super({
       runDir: "/unused",
       preparedSubject: {
@@ -135,6 +139,8 @@ class ScriptedAdapter extends TUIAdapter {
         socketPath: "/unused/socket",
       },
     });
+    this.screens = Array.isArray(screen) ? screen : [screen];
+    this.currentScreen = this.screens[0] ?? "";
   }
 
   override async start(target: string): Promise<void> {
@@ -152,11 +158,14 @@ class ScriptedAdapter extends TUIAdapter {
   }
 
   override async hasSubjectExited(): Promise<boolean> {
-    return false;
+    return this.subjectExited;
   }
 
   override async readScreen(): Promise<string> {
-    return this.screen;
+    this.currentScreen =
+      this.screens[Math.min(this.screenReads, this.screens.length - 1)] ?? "";
+    this.screenReads++;
+    return this.currentScreen;
   }
 
   override async type(text: string): Promise<void> {
@@ -174,13 +183,17 @@ class ScriptedAdapter extends TUIAdapter {
   override async executeTool(name: string, args: Record<string, unknown>, logger: EvidenceLogger): Promise<ToolResult> {
     this.dispatched.push(name);
     if (name !== "read_screen") throw new Error(`unexpected adapter dispatch: ${name}`);
-    const parsed = await new XtermCaptureParser().parse(this.screen, 120, 40);
-    const capturePath = logger.saveCapture(this.screen, JSON.stringify(parsed));
-    return { kind: "capture", text: this.screen, capturePath };
+    const parsed = await new XtermCaptureParser().parse(this.currentScreen, 120, 40);
+    const capturePath = logger.saveCapture(this.currentScreen, JSON.stringify(parsed));
+    return { kind: "capture", text: this.currentScreen, capturePath };
   }
 }
 
-function fixture(adapter: TUIAdapter, client: LLMClient) {
+function fixture(
+  adapter: TUIAdapter,
+  client: LLMClient,
+  options: { startup?: "claude"; maxTimeMs?: number } = {},
+) {
   const root = mkdtempSync(join(tmpdir(), "conversation-role-"));
   const outDir = join(root, "conversation-agent", "conversation-test_20260907T120000Z_ab12");
   const workspace = join(root, "workspace");
@@ -204,7 +217,8 @@ function fixture(adapter: TUIAdapter, client: LLMClient) {
       client,
       logger,
       runId,
-      maxTimeMs: 5_000,
+      maxTimeMs: options.maxTimeMs ?? 5_000,
+      startup: options.startup,
     }),
   };
 }
@@ -262,6 +276,105 @@ describe("ConversationRecord", () => {
 });
 
 describe("runConversation", () => {
+  const readyScreen =
+    "╭─── Claude Code v2.1.209 ───╮\n❯  \n⏵⏵ bypass permissions on (shift+tab to cycle)";
+  const keyMenu =
+    "Detected a custom API key in your environment\nDo you want to use this API key?\n❯ 2. No (recommended)";
+
+  test("waits through Claude startup, releases the simulated user once, and records readiness", async () => {
+    const adapter = new ScriptedAdapter([keyMenu, keyMenu, readyScreen]);
+    const client = new ScriptedClient([
+      response([{
+        id: "finish",
+        name: "finish_conversation",
+        arguments: {
+          endpoint: "delivery",
+          reason: "Ready barrier released the conversation role.",
+          capture: "captures/000.ansi",
+          quote: "bypass permissions on",
+        },
+      }]),
+    ]);
+    const fx = fixture(adapter, client, { startup: "claude" });
+    try {
+      const record = await fx.run();
+      expect(record.status).toBe("completed");
+      expect(client.histories).toHaveLength(1);
+      expect(adapter.screenReads).toBeGreaterThanOrEqual(3);
+      expect(adapter.inputs).toEqual([]);
+      expect(client.systemPrompts[0]).not.toContain("Complete the authorized launcher's startup prompts");
+      expect(client.systemPrompts[0]).not.toContain("After any keypress");
+      const exchange = readFileSync(join(fx.outDir, "exchange.jsonl"), "utf8");
+      expect(exchange).toContain('"kind":"startup"');
+      expect(exchange).toContain('"status":"ready"');
+    } finally {
+      rmSync(fx.root, { recursive: true, force: true });
+    }
+  });
+
+  test("records Claude exit before readiness without calling the simulated user", async () => {
+    const adapter = new ScriptedAdapter(keyMenu);
+    adapter.subjectExited = true;
+    const client = new ScriptedClient([]);
+    const fx = fixture(adapter, client, { startup: "claude" });
+    try {
+      const record = await fx.run();
+      expect(record).toMatchObject({ status: "errored", endpoint: null });
+      expect(record.reason).toMatch(/exited.*ready/i);
+      expect(record.evidence?.quote).toContain("No (recommended)");
+      expect(client.histories).toEqual([]);
+      expect(adapter.closed).toBe(1);
+      const exchange = readFileSync(join(fx.outDir, "exchange.jsonl"), "utf8");
+      expect(exchange).toContain('"status":"exited"');
+    } finally {
+      rmSync(fx.root, { recursive: true, force: true });
+    }
+  });
+
+  test("caps Claude readiness at 30 seconds inside a longer conversation deadline", async () => {
+    let now = 1_000;
+    const nowSpy = jest.spyOn(Date, "now").mockImplementation(() => now);
+    const sleepSpy = jest.spyOn(Bun, "sleep").mockImplementation(async (ms) => {
+      now += Number(ms);
+    });
+    const adapter = new ScriptedAdapter(keyMenu);
+    const client = new ScriptedClient([]);
+    const fx = fixture(adapter, client, {
+      startup: "claude",
+      maxTimeMs: 60_000,
+    });
+    try {
+      const record = await fx.run();
+      expect(record.status).toBe("errored");
+      expect(record.reason).toMatch(/ready composer.*30 seconds/i);
+      expect(record.evidence?.quote).toContain("No (recommended)");
+      expect(client.histories).toEqual([]);
+      expect(adapter.closed).toBe(1);
+    } finally {
+      nowSpy.mockRestore();
+      sleepSpy.mockRestore();
+      rmSync(fx.root, { recursive: true, force: true });
+    }
+  });
+
+  test("retains overall timeout status when its deadline expires during Claude startup", async () => {
+    const adapter = new ScriptedAdapter(keyMenu);
+    const client = new ScriptedClient([]);
+    const fx = fixture(adapter, client, {
+      startup: "claude",
+      maxTimeMs: 1,
+    });
+    try {
+      const record = await fx.run();
+      expect(record.status).toBe("timed_out");
+      expect(record.evidence?.quote).toContain("No (recommended)");
+      expect(client.histories).toEqual([]);
+      expect(adapter.closed).toBe(1);
+    } finally {
+      rmSync(fx.root, { recursive: true, force: true });
+    }
+  });
+
   test("uses only the projected brief and closed user tools without constructing QA or shared tools", async () => {
     const runAgentSpy = jest.spyOn(agentModule, "runAgent");
     const sharedToolsSpy = jest.spyOn(sharedToolsModule, "buildSharedTools");

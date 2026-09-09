@@ -47,6 +47,7 @@ export async function converse(args: ConverseArgs): Promise<ConversationRecord> 
     logger,
     runId: args.runId,
     maxTimeMs: args.maxTimeMs,
+    startup: args.startup,
   };
   return runConversation(options);
 }
