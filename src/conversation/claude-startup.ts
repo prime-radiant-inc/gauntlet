@@ -10,16 +10,18 @@ const STARTUP_FAILURE_MARKERS = [
   "Not logged in",
   "Invalid API key",
 ];
+const CSI_SEQUENCE = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 
 /** Recognize the configured Claude composer observed by the startup probe. */
 export function isClaudeReady(screen: string): boolean {
-  const lower = screen.toLowerCase();
+  const visible = screen.replace(CSI_SEQUENCE, "");
+  const lower = visible.toLowerCase();
   if (STARTUP_FAILURE_MARKERS.some((marker) => lower.includes(marker.toLowerCase()))) {
     return false;
   }
   return (
-    /Claude Code v\d+\.\d+\.\d+/.test(screen) &&
-    /^\s*❯\s*$/m.test(screen) &&
+    /Claude Code v\d+\.\d+\.\d+/.test(visible) &&
+    /^\s*❯\s*$/m.test(visible) &&
     lower.includes("bypass permissions on")
   );
 }

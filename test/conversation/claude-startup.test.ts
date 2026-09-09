@@ -25,4 +25,9 @@ test("recognizes only the observed Claude composer signature", () => {
   expect(isClaudeReady("Claude Code v2.1.209\n❯ ")).toBe(false);
   expect(isClaudeReady("❯ \nbypass permissions on")).toBe(false);
   expect(isClaudeReady(composerScreen)).toBe(true);
+  expect(
+    isClaudeReady(
+      "\x1b[1m╭─── Claude Code \x1b[38;5;111mv2.1.209\x1b[0m ───╮\n\x1b[38;5;111m❯\x1b[0m  \n\x1b[2m⏵⏵ bypass permissions on\x1b[0m",
+    ),
+  ).toBe(true);
 });

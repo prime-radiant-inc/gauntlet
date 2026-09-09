@@ -271,7 +271,7 @@ export async function runConversation(options: ConverseOptions): Promise<Convers
   }
 
   async function captureStartup(
-    status: "ready" | "exited" | "timed_out",
+    status: "observed" | "ready" | "exited" | "timed_out",
   ): Promise<void> {
     const capture = await returnCapture();
     appendExchange(outDir, {
@@ -284,6 +284,7 @@ export async function runConversation(options: ConverseOptions): Promise<Convers
 
   async function waitForClaudeStartup(): Promise<ConversationRecord | null> {
     const startupDeadline = Math.min(deadline, Date.now() + 30_000);
+    let observedScreen: string | null = null;
     while (Date.now() < startupDeadline) {
       if (await adapter.hasSubjectExited()) {
         await captureStartup("exited");
@@ -292,9 +293,14 @@ export async function runConversation(options: ConverseOptions): Promise<Convers
           "Claude exited before reaching the ready composer",
         );
       }
-      if (isClaudeReady(await adapter.readScreen())) {
+      const screen = await adapter.readScreen();
+      if (isClaudeReady(screen)) {
         await captureStartup("ready");
         return null;
+      }
+      if (screen !== observedScreen) {
+        observedScreen = screen;
+        if (screen.trim() !== "") await captureStartup("observed");
       }
       await Bun.sleep(
         Math.min(50, Math.max(1, startupDeadline - Date.now())),

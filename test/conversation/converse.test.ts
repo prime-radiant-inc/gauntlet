@@ -290,7 +290,7 @@ describe("runConversation", () => {
         arguments: {
           endpoint: "delivery",
           reason: "Ready barrier released the conversation role.",
-          capture: "captures/000.ansi",
+          capture: "captures/001.ansi",
           quote: "bypass permissions on",
         },
       }]),
