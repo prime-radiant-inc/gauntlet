@@ -35,6 +35,53 @@ export type AssessmentCriterionSubmission = {
   references: string[];
 };
 
+/** A report whose criteria arrived as markup inside reasoning, not as the native argument. */
+export type ReportRepair = {
+  source: "reasoning-markup";
+  wrapper: "<criteria>" | '<parameter name="criteria">';
+};
+
+const CRITERIA_OPEN_TAG = /<parameter\s+name="criteria"\s*>|<criteria\s*>/;
+const CRITERIA_CLOSE_TAGS = ["</parameter>", "</criteria>"] as const;
+const STRAY_CALL_TAGS = /<\/?(?:invoke|parameter|reasoning)\b[^>]*>/g;
+
+/**
+ * Some models write the criteria array as XML function-call markup inside the
+ * reasoning string and omit the native argument. The rows inside are usually
+ * well-formed JSON. Lift them out and hand back the reasoning without the block
+ * and without stray call tags; the caller validates the rows as native rows.
+ */
+export function recoverCriteriaFromReasoning(
+  reasoning: string,
+): { rows: unknown[]; wrapper: ReportRepair["wrapper"]; reasoning: string } | undefined {
+  const open = CRITERIA_OPEN_TAG.exec(reasoning);
+  if (open === null) return undefined;
+  const bodyStart = open.index + open[0].length;
+  let bodyEnd = reasoning.length;
+  let blockEnd = reasoning.length;
+  for (const close of CRITERIA_CLOSE_TAGS) {
+    const at = reasoning.indexOf(close, bodyStart);
+    if (at !== -1 && at < bodyEnd) {
+      bodyEnd = at;
+      blockEnd = at + close.length;
+    }
+  }
+  let rows: unknown;
+  try {
+    rows = JSON.parse(reasoning.slice(bodyStart, bodyEnd).trim());
+  } catch {
+    return undefined;
+  }
+  if (!Array.isArray(rows)) return undefined;
+  const wrapper: ReportRepair["wrapper"] = open[0].startsWith("<parameter")
+    ? '<parameter name="criteria">'
+    : "<criteria>";
+  const cleaned = (reasoning.slice(0, open.index) + reasoning.slice(blockEnd))
+    .replace(STRAY_CALL_TAGS, "")
+    .trim();
+  return { rows, wrapper, reasoning: cleaned };
+}
+
 export const ASSESSMENT_REPORT_TOOL: ToolDefinition = {
   name: "report_result",
   description: "Report your assessment result. Call this when you are done assessing.",

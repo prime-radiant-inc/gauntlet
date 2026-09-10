@@ -3,6 +3,7 @@ import {
   ASSESSMENT_REPORT_TOOL,
   deriveAssessmentStatus,
   parseAssessmentReport,
+  recoverCriteriaFromReasoning,
 } from "../../src/assessment/report";
 
 const acceptanceCriteria = [
@@ -171,4 +172,40 @@ test("assessment report tool exposes only model-authored assessment fields", () 
 
 test("deriveAssessmentStatus rejects an empty rubric", () => {
   expect(() => deriveAssessmentStatus([])).toThrow("Assessment requires criteria");
+});
+
+describe("recoverCriteriaFromReasoning", () => {
+  const rows = submission(["pass", "fail"]).criteria;
+  const rowsJson = JSON.stringify(rows);
+
+  test("recovers a <criteria> block after a stray closing reasoning tag", () => {
+    const recovered = recoverCriteriaFromReasoning(
+      `Synthesis text.</reasoning> <criteria>${rowsJson}</criteria>`,
+    );
+    expect(recovered).toEqual({ rows, wrapper: "<criteria>", reasoning: "Synthesis text." });
+  });
+
+  test('recovers a <parameter name="criteria"> block followed by </invoke>', () => {
+    const recovered = recoverCriteriaFromReasoning(
+      `Synthesis text.</parameter> <parameter name="criteria">${rowsJson}</parameter> </invoke>`,
+    );
+    expect(recovered).toEqual({
+      rows,
+      wrapper: '<parameter name="criteria">',
+      reasoning: "Synthesis text.",
+    });
+  });
+
+  test("recovers an unclosed <criteria> block that runs to the end of the string", () => {
+    const recovered = recoverCriteriaFromReasoning(
+      `Synthesis text.</reasoning> <criteria>${rowsJson}`,
+    );
+    expect(recovered).toEqual({ rows, wrapper: "<criteria>", reasoning: "Synthesis text." });
+  });
+
+  test("returns undefined without a criteria tag or when the block is not a JSON array", () => {
+    expect(recoverCriteriaFromReasoning("Plain synthesis with no block.")).toBeUndefined();
+    expect(recoverCriteriaFromReasoning("<criteria>not json</criteria>")).toBeUndefined();
+    expect(recoverCriteriaFromReasoning('<criteria>{"verdict":"pass"}</criteria>')).toBeUndefined();
+  });
 });
