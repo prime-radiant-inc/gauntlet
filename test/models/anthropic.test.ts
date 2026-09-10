@@ -9,8 +9,65 @@ import {
   CLAUDE_CODE_IDENTITY,
 } from "../../src/models/anthropic";
 import type Anthropic from "@anthropic-ai/sdk";
+import { ASSESSMENT_REPORT_TOOL } from "../../src/assessment/report";
 
 import { maxOutputTokensForModel } from "../../src/models/anthropic";
+
+describe("assessment report schema on the Anthropic wire", () => {
+  for (const route of [
+    { name: "direct API", baseURL: undefined, oauth: undefined, strict: true },
+    { name: "explicit direct API", baseURL: "https://api.anthropic.com", oauth: undefined, strict: true },
+    { name: "Mantle", baseURL: "https://bedrock-mantle.us-east-1.api.aws/anthropic", oauth: "fixture-bearer", strict: undefined },
+    { name: "custom API", baseURL: "https://example.invalid", oauth: undefined, strict: undefined },
+    { name: "subscription OAuth", baseURL: undefined, oauth: "fixture-oauth", strict: undefined },
+  ]) {
+    test(`requests schema enforcement only on the supported route: ${route.name}`, async () => {
+      const previousFetch = globalThis.fetch;
+      const env = {
+        ANTHROPIC_API_KEY: "fixture-key",
+        ANTHROPIC_BASE_URL: route.baseURL,
+        CLAUDE_CODE_OAUTH_TOKEN: undefined,
+        ANTHROPIC_AUTH_TOKEN: route.oauth,
+      };
+      const previousEnv = Object.fromEntries(Object.keys(env).map(key => [key, process.env[key]]));
+      let sent: Record<string, any> | undefined;
+      try {
+        for (const [key, value] of Object.entries(env)) {
+          if (value === undefined) delete process.env[key];
+          else process.env[key] = value;
+        }
+        globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+          const request = new Request(input, init);
+          expect(new URL(request.url).origin).toBe(new URL(route.baseURL ?? "https://api.anthropic.com").origin);
+          sent = await request.json() as Record<string, any>;
+          return new Response(JSON.stringify({
+            id: "msg_fixture", type: "message", role: "assistant", model: "claude-sonnet-5",
+            content: [{ type: "text", text: "done" }], stop_reason: "end_turn", stop_sequence: null,
+            usage: { input_tokens: 10, output_tokens: 1 },
+          }), { headers: { "content-type": "application/json" } });
+        }) as typeof fetch;
+        const client = createAnthropicClient("claude-sonnet-5");
+        await client.chat([client.userMessage("Assess the evidence")], [
+          { name: "read_evidence", description: "Read evidence", parameters: { type: "object", properties: { path: { type: "string" } } } },
+          ASSESSMENT_REPORT_TOOL,
+        ], "Assess the evidence");
+        const report = sent!.tools.find((tool: { name: string }) => tool.name === "report_result");
+        expect(report.strict).toBe(route.strict);
+        expect(sent!.tools[0].strict).toBeUndefined();
+        expect(report.input_schema.additionalProperties).toBe(false);
+        expect(report.input_schema.properties.criteria.items.additionalProperties).toBe(false);
+        expect(report.input_schema.properties.observations.items.additionalProperties).toBe(false);
+        expect(report.input_schema.required).toContain("criteria");
+      } finally {
+        globalThis.fetch = previousFetch;
+        for (const [key, value] of Object.entries(previousEnv)) {
+          if (value === undefined) delete process.env[key];
+          else process.env[key] = value;
+        }
+      }
+    });
+  }
+});
 
 describe("resolveAnthropicAuth", () => {
   test("prefers a subscription OAuth token (CLAUDE_CODE_OAUTH_TOKEN) over an API key", () => {
