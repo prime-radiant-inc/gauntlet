@@ -1,5 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
-import type { LLMClient, ToolDefinition, AgentResponse, StopReason, ToolCall, ToolResult } from "./provider";
+import type { LLMClient, ToolDefinition, AgentResponse, StopReason, ToolCall, ToolResult, TokenUsage } from "./provider";
 import { withLlmErrorSanitization } from "../util/sanitize-error";
 
 /**
@@ -117,7 +117,7 @@ export function createAnthropicClient(model: string): LLMClient {
   const client = new Anthropic(buildAnthropicClientOptions(auth));
 
   return {
-    async chat(messages, tools, systemPrompt) {
+    async chat(messages, tools, systemPrompt, requestContext) {
       const convertedTools = tools.map(convertTool);
 
       // Cache breakpoint 1: system prompt (OAuth prepends the Claude Code
@@ -137,8 +137,14 @@ export function createAnthropicClient(model: string): LLMClient {
         messages as Anthropic.MessageParam[]
       );
 
+      const assessment = requestContext?.assessment;
+      const requestClient = assessment ? client.withOptions({ fetch: assessment.fetch }) : client;
+      const requestOptions = assessment ? {
+        signal: assessment.signal,
+        timeout: Math.max(0, Math.floor(assessment.workDeadlineAtMs - assessment.now())),
+      } : undefined;
       const response = await withLlmErrorSanitization(() =>
-        client.messages.create({
+        requestClient.messages.create({
           model,
           max_tokens: maxOutputTokensForModel(model),
           system,
@@ -153,7 +159,7 @@ export function createAnthropicClient(model: string): LLMClient {
           // they round-trip via rawAssistantMessage (signatures intact), so
           // multi-turn loops and session revival pick them up automatically.
           thinking: { type: "adaptive" },
-        }),
+        }, requestOptions),
       );
 
       return convertResponse(response);
@@ -281,13 +287,6 @@ export function convertResponse(response: Anthropic.Message): AgentResponse {
   const stopReason: StopReason =
     (response.stop_reason as StopReason | null) ?? "end_turn";
 
-  // Capture cache breakpoint telemetry. `cache_creation_input_tokens` tells
-  // us how many tokens were written to the cache on this turn;
-  // `cache_read_input_tokens` tells us how many were served from cache. If
-  // both stay at 0 across an entire run, the three breakpoints in chat()
-  // are not hitting and we have a silent regression to investigate.
-  const cacheCreation = response.usage.cache_creation_input_tokens;
-  const cacheRead = response.usage.cache_read_input_tokens;
 
   return {
     text,
@@ -295,12 +294,17 @@ export function convertResponse(response: Anthropic.Message): AgentResponse {
     toolCalls,
     stopReason,
     rawAssistantMessage: { role: "assistant", content: response.content },
-    usage: {
-      inputTokens: response.usage.input_tokens,
-      outputTokens: response.usage.output_tokens,
-      cacheCreationInputTokens: cacheCreation ?? undefined,
-      cacheReadInputTokens: cacheRead ?? undefined,
-    },
+    usage: normalizeAnthropicUsage(response.usage),
     rawUsage: response.usage,
+  };
+}
+
+/** Keep Anthropic's disjoint input/cache counters in the common token shape. */
+export function normalizeAnthropicUsage(raw: Anthropic.Message["usage"]): TokenUsage {
+  return {
+    inputTokens: raw.input_tokens,
+    outputTokens: raw.output_tokens,
+    cacheCreationInputTokens: raw.cache_creation_input_tokens ?? undefined,
+    cacheReadInputTokens: raw.cache_read_input_tokens ?? undefined,
   };
 }

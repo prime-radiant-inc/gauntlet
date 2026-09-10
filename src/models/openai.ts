@@ -1,5 +1,5 @@
 import OpenAI from "openai";
-import type { LLMClient, ToolDefinition, AgentResponse, StopReason, ToolCall, ToolResult } from "./provider";
+import type { LLMClient, ToolDefinition, AgentResponse, StopReason, ToolCall, ToolResult, TokenUsage } from "./provider";
 import { withLlmErrorSanitization } from "../util/sanitize-error";
 
 export function createOpenAIClient(model: string): LLMClient {
@@ -13,8 +13,14 @@ export function createOpenAIClient(model: string): LLMClient {
 
   return {
     async chat(messages, tools, systemPrompt, requestContext) {
+      const assessment = requestContext?.assessment;
+      const requestClient = assessment ? client.withOptions({ fetch: assessment.fetch }) : client;
+      const requestOptions = assessment ? {
+        signal: assessment.signal,
+        timeout: Math.max(0, Math.floor(assessment.workDeadlineAtMs - assessment.now())),
+      } : undefined;
       const response = await withLlmErrorSanitization(() =>
-        client.responses.create({
+        requestClient.responses.create({
           model,
           instructions: systemPrompt,
           input: messages as OpenAI.Responses.ResponseInputItem[],
@@ -30,7 +36,7 @@ export function createOpenAIClient(model: string): LLMClient {
           include: ["reasoning.encrypted_content"],
           store: false,
           ...(requestContext?.runId && { prompt_cache_key: requestContext.runId }),
-        }),
+        }, requestOptions),
       );
       return convertResponse(response);
     },
@@ -136,11 +142,6 @@ export function convertResponse(response: OpenAI.Responses.Response): AgentRespo
     }
   }
 
-  // OpenAI Responses' `input_tokens` *includes* `cached_tokens`;
-  // subtract so `TokenUsage.inputTokens` stays uncached-only across
-  // both providers (Anthropic's `input_tokens` is naturally disjoint).
-  const cached = response.usage?.input_tokens_details?.cached_tokens ?? 0;
-  const inputTokens = (response.usage?.input_tokens ?? 0) - cached;
 
   return {
     text,
@@ -152,11 +153,7 @@ export function convertResponse(response: OpenAI.Responses.Response): AgentRespo
     // reasoning items round-trip across turns — the load-bearing
     // behavior for the cache-utilization gain.
     rawAssistantMessage: response.output,
-    usage: {
-      inputTokens,
-      outputTokens: response.usage?.output_tokens ?? 0,
-      cacheReadInputTokens: cached || undefined,
-    },
+    usage: normalizeOpenAIUsage(response.usage),
     rawUsage: response.usage,
   };
 }
@@ -180,4 +177,14 @@ export function deriveStopReason(
     if (reason === "content_filter") return "stop_sequence";
   }
   return "end_turn";
+}
+
+/** OpenAI includes cache reads in input_tokens; common input is uncached-only. */
+export function normalizeOpenAIUsage(raw: OpenAI.Responses.Response["usage"]): TokenUsage {
+  const cached = raw?.input_tokens_details?.cached_tokens ?? 0;
+  return {
+    inputTokens: (raw?.input_tokens ?? 0) - cached,
+    outputTokens: raw?.output_tokens ?? 0,
+    cacheReadInputTokens: cached || undefined,
+  };
 }

@@ -28,9 +28,15 @@ async function main() {
   switch (args.command) {
     case "assess": {
       const { assess, assessmentExitCode } = await import("./cli/assess");
-      const result = await assess(args);
-      console.log(JSON.stringify(result));
-      process.exitCode = assessmentExitCode(result);
+      try {
+        const result = await assess(args);
+        console.log(JSON.stringify(result));
+        process.exitCode = assessmentExitCode(result);
+      } catch (error) {
+        const verbose = isVerboseRequest(process.env as Record<string, string | undefined>, process.argv);
+        process.stderr.write(formatCliError(error, { verbose, isTty: Boolean(process.stderr.isTTY) }));
+        process.exitCode = 2;
+      }
       break;
     }
     case "converse": {

@@ -2,12 +2,16 @@ import { writeFileSync, mkdirSync } from "fs";
 import { join } from "path";
 import type { VetResult, Observation } from "../types";
 
-export function writeResultFiles(outDir: string, result: VetResult): void {
+export function writeResultFiles(
+  outDir: string,
+  result: VetResult,
+  writeFile: (path: string, text: string) => void = writeFileSync,
+): void {
   // Write result.json
-  writeFileSync(join(outDir, "result.json"), JSON.stringify(result, null, 2) + "\n");
+  writeFile(join(outDir, "result.json"), JSON.stringify(result, null, 2) + "\n");
 
   // Write result.md — human-readable summary
-  writeFileSync(join(outDir, "result.md"), renderResultMarkdown(result));
+  writeFile(join(outDir, "result.md"), renderResultMarkdown(result));
 
   // Write individual issue files
   if (result.observations.length > 0) {
@@ -18,7 +22,7 @@ export function writeResultFiles(outDir: string, result: VetResult): void {
       const num = String(i + 1).padStart(3, "0");
       const slug = obs.description.slice(0, 40).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/-+$/, "");
       const filename = `${num}-${obs.kind}-${slug}.md`;
-      writeFileSync(join(issuesDir, filename), renderObservationMarkdown(obs, result));
+      writeFile(join(issuesDir, filename), renderObservationMarkdown(obs, result));
     }
   }
 }

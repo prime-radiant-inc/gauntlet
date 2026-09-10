@@ -506,15 +506,16 @@ describe("runConversation", () => {
     }
   });
 
-  test("does not execute input after an accepted finish in the same response", async () => {
-    const adapter = new ScriptedAdapter("Delivered: final");
+  test("retains a bad delivery and does not execute later input in the same response", async () => {
+    const adapter = new ScriptedAdapter("Final proposal: notify every task through the operating system.");
     const client = new ScriptedClient([
       response([{ id: "screen", name: "read_screen", arguments: {} }]),
       (messages) => {
         const { capture } = captureFromHistory(messages);
         return response([
           { id: "finish", name: "finish_conversation", arguments: {
-            endpoint: "delivery", reason: "done", capture, quote: "Delivered: final",
+            endpoint: "delivery", reason: "The requested proposal was delivered, but it is bad.",
+            capture, quote: "Final proposal: notify every task through the operating system.",
           } },
           { id: "late-input", name: "type_and_submit", arguments: { text: "touch forbidden" } },
         ]);
@@ -522,7 +523,10 @@ describe("runConversation", () => {
     ]);
     const fx = fixture(adapter, client);
     try {
-      await fx.run();
+      const record = await fx.run();
+      expect(record.status).toBe("completed");
+      expect(record.endpoint).toBe("delivery");
+      expect(record.evidence?.quote).toContain("notify every task");
       expect(adapter.inputFinished).toBe(true);
       expect(adapter.inputs).toEqual([]);
     } finally {

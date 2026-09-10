@@ -47,6 +47,7 @@ export interface RunStartFields {
 }
 
 export interface LlmResponseFields {
+  assessment_request_id?: string;
   turn: number;
   stopReason: string;
   text: string;
@@ -225,7 +226,7 @@ export class EvidenceLogger {
    * hoisted from the raw usage when the provider includes it (Anthropic does),
    * else omitted so obol assumes the standard tier.
    */
-  logUsageRow(rawUsage: unknown): void {
+  logUsageRow(rawUsage: unknown, identity?: { assessment_request_id: string; assessment_attempt_id: string }): void {
     const tier = (rawUsage as { service_tier?: unknown } | null | undefined)
       ?.service_tier;
     const row = {
@@ -235,6 +236,7 @@ export class EvidenceLogger {
       model: this.runModel,
       ...(typeof tier === "string" ? { service_tier: tier } : {}),
       usage: rawUsage,
+      ...identity,
     };
     appendFileSync(join(this.outDir, "usage.jsonl"), JSON.stringify(row) + "\n");
   }
@@ -253,8 +255,8 @@ export class EvidenceLogger {
     this.writeEvent("user_message", { turn, content });
   }
 
-  logLlmRequest(turn: number, messageCount: number): void {
-    this.writeEvent("llm_request", { turn, messageCount });
+  logLlmRequest(turn: number, messageCount: number, identity?: { assessment_request_id: string }): void {
+    this.writeEvent("llm_request", { turn, messageCount, ...identity });
   }
 
   logLlmResponse(fields: LlmResponseFields): void {
