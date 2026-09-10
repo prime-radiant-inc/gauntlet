@@ -41,8 +41,18 @@ const originalFetch = globalThis.fetch;
 globalThis.fetch = async (...args) => {
   const response = await originalFetch(...args);
   const value = response.headers.get("x-fixture-time");
+  if (value && ["cancel-before", "late"].includes(${JSON.stringify(mode)})) {
+    // These cases exercise an already returned body at the report boundary.
+    // fetch resolves on headers; drain the actual localhost bytes before the
+    // synthetic signal/clock change, independently of OS packet buffering.
+    const returned = new Response(await response.arrayBuffer(), {
+      status: response.status, statusText: response.statusText, headers: response.headers,
+    });
+    time = Number(value);
+    if (${JSON.stringify(mode)} === "cancel-before") process.emit("SIGTERM", "SIGTERM");
+    return returned;
+  }
   if (value) time = Number(value);
-  if (${JSON.stringify(mode)} === "cancel-before" && value) process.emit("SIGTERM", "SIGTERM");
   return response;
 };
 const write = writer.writeResultFiles;
@@ -98,6 +108,7 @@ type CliOptions = {
   apiError?: boolean;
   verbose?: boolean;
   zeroCache?: boolean;
+  bodyDelayMs?: number;
   retry?: boolean;
   conversionFailure?: boolean;
   malformedRubric?: boolean;
@@ -131,9 +142,20 @@ async function withCli(options: CliOptions, check: (fx: {
       { status: 429, headers: { "retry-after-ms": "1" } });
     const reply = nativeReply(options.retry ? index - 2 : index, options.verdict);
     if (options.zeroCache) Object.assign(reply.usage, { cache_creation_input_tokens: 0, cache_read_input_tokens: 0 });
-    return Response.json(options.conversionFailure ? { ...reply, content: null } : reply, {
+    const response = Response.json(options.conversionFailure ? { ...reply, content: null } : reply, {
       headers: options.mode && index === 1 ? { "x-fixture-time": options.mode === "late" ? "115000" : "114999" } : {},
     });
+    if (options.bodyDelayMs && index === 1) {
+      const bytes = new TextEncoder().encode(await response.text());
+      // Deliver headers before the response body to expose the transport boundary.
+      return new Response(new ReadableStream({ start(controller) {
+        controller.enqueue(bytes.slice(0, 1));
+        timers.push(setTimeout(() => {
+          controller.enqueue(bytes.slice(1)); controller.close();
+        }, options.bodyDelayMs));
+      } }), { status: response.status, headers: response.headers });
+    }
+    return response;
   } });
   try {
     const preloads: string[] = [];
@@ -241,7 +263,8 @@ test.each(["delayed", "cancel-after"])("CLI timely report publishes at 117000 wi
 });
 
 test("CLI cancellation before the report decision retains late usage without accepting the report", async () => {
-  await withCli({ mode: "cancel-before" }, fx => {
+  await withCli({ mode: "cancel-before", bodyDelayMs: 25 }, fx => {
+    expect(fx.requests).toBe(2);
     expect(fx.marker).toMatchObject({ status: "cancelled", accepted_report_sha256: null });
     expect(fx.result.criteria).toBeUndefined();
     expect(fx.usage).toHaveLength(2);
@@ -315,7 +338,8 @@ test("CLI conversion failure retains physical usage and an honest zero-response 
 });
 
 test("CLI report returned at work expiry retains its physical usage without a completed marker", async () => {
-  await withCli({ mode: "late" }, fx => {
+  await withCli({ mode: "late", bodyDelayMs: 25 }, fx => {
+    expect(fx.requests).toBe(2);
     expect(fx.marker).toMatchObject({ status: "timed_out", accepted_report_sha256: null });
     expect(fx.usage).toHaveLength(2);
     expect(fx.result.usage).toMatchObject({ inputTokens: 6, outputTokens: 4 });
