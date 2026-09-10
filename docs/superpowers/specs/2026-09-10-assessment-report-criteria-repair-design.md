@@ -54,7 +54,9 @@ failure into an accepted report with a visible marker.
 `value.criteria` is `undefined` and `value.reasoning` is a string:
 
 1. Find the first `<criteria>` or `<parameter name="criteria">` tag. Whitespace
-   inside the tag is tolerated.
+   is tolerated before the closing `>` of the open tag; other variants (spaces
+   around `=`, single-quoted attributes, namespaced tags) are not recognized and
+   fall through to the existing rejection.
 2. Take the text after the tag up to the matching `</criteria>` or
    `</parameter>`, or to the end of the string when no close tag follows.
 3. Trim it and parse it as JSON. Require an array.
@@ -117,6 +119,10 @@ Tests first, in `test/assessment/report.test.ts`:
 7. Recovered block that leaves reasoning empty after cleaning: rejected with
    the new reason.
 
+Wrapper cases 2 and 3 are exercised through `recoverCriteriaFromReasoning`,
+where all wrapper-dependent logic lives; the parser-level integration is
+exercised through case 1.
+
 In the assessment loop tests, one scripted case asserts the
 `assessment_report_repaired` event and the completion reason.
 
@@ -143,3 +149,8 @@ That live run is a separate decision.
   target, with data.
 - **Wrapper drift.** A new wrapper shape falls through to the existing
   rejection, which is today's behavior, not a regression.
+- **Repeated criteria blocks.** When reasoning carries more than one criteria
+  block, the first is recovered and the rest remain in the cleaned reasoning
+  verbatim, so the leftover is visible in `result.json`. The retained corpus
+  shows one block per submission; a decline-when-leftover guard is deferred
+  until a live shape needs it.
