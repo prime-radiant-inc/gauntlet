@@ -22,6 +22,7 @@ const reportProperties = (
   REPORT_TOOL.parameters as { properties: Record<string, unknown> }
 ).properties;
 const reportReasoning = reportProperties.reasoning as Record<string, unknown>;
+const reportObservations = reportProperties.observations as { items: Record<string, unknown> };
 const reportCriterionProperties = (
   reportProperties.criteria as {
     items: { properties: Record<string, unknown> };
@@ -86,11 +87,16 @@ export function recoverCriteriaFromReasoning(
 export const ASSESSMENT_REPORT_TOOL: ToolDefinition = {
   name: "report_result",
   description: "Report your assessment result. Call this when you are done assessing.",
+  strict: true,
   parameters: {
     type: "object",
+    additionalProperties: false,
     properties: {
       summary: reportProperties.summary,
-      observations: reportProperties.observations,
+      observations: {
+        ...reportObservations,
+        items: { ...reportObservations.items, additionalProperties: false },
+      },
       criteria: {
         type: "array",
         description:
@@ -98,6 +104,7 @@ export const ASSESSMENT_REPORT_TOOL: ToolDefinition = {
           "Pass as a native array here, not as JSON text or tags inside reasoning.",
         items: {
           type: "object",
+          additionalProperties: false,
           properties: {
             verdict: reportCriterionProperties.verdict,
             observation: {

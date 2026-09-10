@@ -6,6 +6,8 @@ export interface ToolDefinition {
   name: string;
   description: string;
   parameters: Record<string, unknown>;
+  /** Request schema-constrained inputs on provider routes that support them. */
+  strict?: boolean;
   /**
    * Optional per-tool override for the agent loop's `executeTool` race
    * timeout. When unset, the loop uses

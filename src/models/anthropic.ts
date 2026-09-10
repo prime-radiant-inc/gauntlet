@@ -115,10 +115,12 @@ export function createAnthropicClient(model: string): LLMClient {
   const auth = resolveAnthropicAuth();
   const useOAuth = auth.mode === "oauth";
   const client = new Anthropic(buildAnthropicClientOptions(auth));
+  // Strict tools are qualified only on the direct API-key route; Mantle rejects them.
+  const strictTools = !useOAuth && new URL(client.baseURL).origin === "https://api.anthropic.com";
 
   return {
     async chat(messages, tools, systemPrompt, requestContext) {
-      const convertedTools = tools.map(convertTool);
+      const convertedTools = tools.map(tool => convertTool(tool, strictTools));
 
       // Cache breakpoint 1: system prompt (OAuth prepends the Claude Code
       // identity block ahead of it — see buildAnthropicSystemBlocks).
@@ -211,11 +213,12 @@ export function anthropicToolResultMessages(
   return [{ role: "user", content }];
 }
 
-function convertTool(tool: ToolDefinition): Anthropic.Tool {
+function convertTool(tool: ToolDefinition, strictTools: boolean): Anthropic.Tool {
   return {
     name: tool.name,
     description: tool.description,
     input_schema: tool.parameters as Anthropic.Tool["input_schema"],
+    ...(strictTools && tool.strict === true ? { strict: true } : {}),
   };
 }
 
