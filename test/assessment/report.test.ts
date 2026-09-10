@@ -285,6 +285,14 @@ describe("recoverCriteriaFromReasoning", () => {
     expect(recovered).toEqual({ rows, wrapper: "<criteria>", reasoning: "Synthesis text." });
   });
 
+  test("tolerates whitespace before the closing bracket of the open tag", () => {
+    for (const open of ["<criteria >", '<parameter  name="criteria" >']) {
+      const recovered = recoverCriteriaFromReasoning(`Synthesis text. ${open}${rowsJson}</criteria>`);
+      expect(recovered?.rows).toEqual(rows);
+      expect(recovered?.reasoning).toBe("Synthesis text.");
+    }
+  });
+
   test("returns undefined without a criteria tag or when the block is not a JSON array", () => {
     expect(recoverCriteriaFromReasoning("Plain synthesis with no block.")).toBeUndefined();
     expect(recoverCriteriaFromReasoning("<criteria>not json</criteria>")).toBeUndefined();
