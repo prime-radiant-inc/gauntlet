@@ -9,6 +9,7 @@ export interface AssessmentReport {
   reasoning: string;
   observations: Observation[];
   criteria: CriterionVerdict[];
+  repair?: ReportRepair;
 }
 
 const CRITERION_VERDICTS: readonly CriterionVerdict["verdict"][] = [
@@ -186,21 +187,40 @@ export function parseAssessmentReport(
   if (acceptanceCriteria.length === 0) {
     return { ok: false, reason: "criteria: assessment requires at least one acceptance criterion" };
   }
-  if (!Array.isArray(value.criteria)) {
-    return { ok: false, reason: `criteria: expected array, got ${typeName(value.criteria)}` };
+
+  let criteriaValue: unknown = value.criteria;
+  let reasoningValue: unknown = value.reasoning;
+  let repair: ReportRepair | undefined;
+  if (criteriaValue === undefined && typeof reasoningValue === "string") {
+    const recovered = recoverCriteriaFromReasoning(reasoningValue);
+    if (recovered !== undefined) {
+      if (recovered.reasoning === "") {
+        return {
+          ok: false,
+          reason: "reasoning: empty after recovering criteria; provide a concise synthesis",
+        };
+      }
+      criteriaValue = recovered.rows;
+      reasoningValue = recovered.reasoning;
+      repair = { source: "reasoning-markup", wrapper: recovered.wrapper };
+    }
   }
-  if (value.criteria.length !== acceptanceCriteria.length) {
+
+  if (!Array.isArray(criteriaValue)) {
+    return { ok: false, reason: `criteria: expected array, got ${typeName(criteriaValue)}` };
+  }
+  if (criteriaValue.length !== acceptanceCriteria.length) {
     return {
       ok: false,
       reason:
         `criteria: expected ${acceptanceCriteria.length} entries (one per ` +
-        `acceptance criterion, in order), got ${value.criteria.length}`,
+        `acceptance criterion, in order), got ${criteriaValue.length}`,
     };
   }
 
   const criteria: CriterionVerdict[] = [];
-  for (let i = 0; i < value.criteria.length; i++) {
-    const row = value.criteria[i];
+  for (let i = 0; i < criteriaValue.length; i++) {
+    const row = criteriaValue[i];
     if (!isRecord(row)) {
       return { ok: false, reason: `criteria[${i}]: expected object, got ${typeName(row)}` };
     }
@@ -268,11 +288,12 @@ export function parseAssessmentReport(
 
   const core = parseReportResult({
     ...value,
+    reasoning: reasoningValue,
     status: deriveAssessmentStatus(criteria),
     criteria,
   });
   if (!core.ok) return core;
-  return { ok: true, value: { ...core.value, criteria } };
+  return { ok: true, value: { ...core.value, criteria, ...(repair === undefined ? {} : { repair }) } };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

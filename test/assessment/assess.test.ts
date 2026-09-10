@@ -332,7 +332,8 @@ describe("runAssessment", () => {
         is_error: true,
       });
       expect(firstRejection.content).toStartWith(
-        "Error: report_result rejected: criteria: expected array, got undefined",
+        "Error: report_result rejected: criteria: expected 2 entries " +
+          "(one per acceptance criterion, in order), got 1",
       );
       expect(firstRejection.content).toContain(
         "criteria must be a top-level array alongside summary and reasoning",
@@ -409,11 +410,13 @@ describe("runAssessment", () => {
         event.type === "tool_result" && event.name === "report_result" && event.error === true
       );
       expect(rejectionEvents).toHaveLength(2);
-      expect(rejectionEvents.every((event) =>
-        String(event.text).startsWith(
-          "Error: report_result rejected: criteria: expected array, got undefined",
-        )
-      )).toBe(true);
+      // The first submission's markup yields one row against a two-criterion rubric;
+      // the second's malformed open tag leaves no criteria to recover at all.
+      expect(rejectionEvents.map((event) => String(event.text).split("\n")[0])).toEqual([
+        "Error: report_result rejected: criteria: expected 2 entries " +
+          "(one per acceptance criterion, in order), got 1",
+        "Error: report_result rejected: criteria: expected array, got undefined",
+      ]);
       expect(events.filter((event) => event.type === "llm_response")).toHaveLength(4);
       expect(readFileSync(join(fx.outDir, "result.md"), "utf8")).toContain("**Status:** fail");
       expect(assessmentExitCode(result)).toBe(1);

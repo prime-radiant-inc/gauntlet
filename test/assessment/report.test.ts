@@ -129,6 +129,88 @@ describe("parseAssessmentReport", () => {
 
     expect(parsed.ok).toBe(true);
   });
+
+  test("recovers criteria from reasoning markup when the native argument is absent", () => {
+    const native = submission();
+    const { criteria, ...withoutCriteria } = native;
+    const parsed = parseAssessmentReport(
+      {
+        ...withoutCriteria,
+        reasoning: `${native.reasoning}</reasoning> <criteria>${JSON.stringify(criteria)}</criteria>`,
+      },
+      acceptanceCriteria,
+      exposedEvidencePaths,
+    );
+
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) throw new Error(parsed.reason);
+    expect(parsed.value.repair).toEqual({ source: "reasoning-markup", wrapper: "<criteria>" });
+    expect(parsed.value.reasoning).toBe(native.reasoning);
+    expect(parsed.value.status).toBe("fail");
+    expect(parsed.value.criteria.map((row) => row.verdict)).toEqual(["pass", "fail"]);
+    expect(parsed.value.criteria[0].criterion).toBe(acceptanceCriteria[0]);
+  });
+
+  test("a native criteria array wins over markup in reasoning", () => {
+    const native = submission();
+    const reasoning = `${native.reasoning} <criteria>[]</criteria>`;
+    const parsed = parseAssessmentReport(
+      { ...native, reasoning },
+      acceptanceCriteria,
+      exposedEvidencePaths,
+    );
+
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) throw new Error(parsed.reason);
+    expect(parsed.value.repair).toBeUndefined();
+    expect(parsed.value.reasoning).toBe(reasoning);
+    expect(parsed.value.criteria).toHaveLength(2);
+  });
+
+  test("recovered rows face the same count and reference checks as native rows", () => {
+    const { criteria: oneRow, ...oneRest } = submission(["pass"]);
+    expect(parseAssessmentReport(
+      { ...oneRest, reasoning: `${oneRest.reasoning} <criteria>${JSON.stringify(oneRow)}</criteria>` },
+      acceptanceCriteria,
+      exposedEvidencePaths,
+    )).toEqual({
+      ok: false,
+      reason: "criteria: expected 2 entries (one per acceptance criterion, in order), got 1",
+    });
+
+    const unread = submission();
+    unread.criteria[0].references = ["visible/never-read.txt"];
+    const { criteria: unreadRows, ...unreadRest } = unread;
+    expect(parseAssessmentReport(
+      { ...unreadRest, reasoning: `${unreadRest.reasoning} <criteria>${JSON.stringify(unreadRows)}</criteria>` },
+      acceptanceCriteria,
+      exposedEvidencePaths,
+    )).toEqual({
+      ok: false,
+      reason: "criteria[0].references[0]: evidence path has not been read: visible/never-read.txt",
+    });
+  });
+
+  test("markup that is not a JSON array falls through to the original rejection", () => {
+    const { criteria: _rows, ...rest } = submission();
+    expect(parseAssessmentReport(
+      { ...rest, reasoning: `${rest.reasoning} <criteria>not json</criteria>` },
+      acceptanceCriteria,
+      exposedEvidencePaths,
+    )).toEqual({ ok: false, reason: "criteria: expected array, got undefined" });
+  });
+
+  test("a recovered block that leaves reasoning empty is rejected", () => {
+    const { criteria, ...rest } = submission();
+    expect(parseAssessmentReport(
+      { ...rest, reasoning: `<criteria>${JSON.stringify(criteria)}</criteria>` },
+      acceptanceCriteria,
+      exposedEvidencePaths,
+    )).toEqual({
+      ok: false,
+      reason: "reasoning: empty after recovering criteria; provide a concise synthesis",
+    });
+  });
 });
 
 test("assessment report tool exposes only model-authored assessment fields", () => {
