@@ -25,6 +25,7 @@ import { asCardId, type RunId } from "../util/brands";
 import { parseRunId } from "../util/id";
 import {
   ASSESSMENT_REPORT_TOOL,
+  type AssessmentReport,
   formatAssessmentReportRejection,
   parseAssessmentReport,
 } from "./report";
@@ -225,7 +226,7 @@ export async function runAssessment(options: AssessOptions): Promise<VetResult> 
   }
 
   function validateReport(call: ToolCall):
-    | { ok: true; value: Parameters<typeof buildResult>[0] }
+    | { ok: true; value: AssessmentReport }
     | { ok: false; result: ToolResult } {
     const parsed = parseAssessmentReport(
       call.arguments,
@@ -341,7 +342,18 @@ export async function runAssessment(options: AssessOptions): Promise<VetResult> 
           if (call.name === "report_result") {
             const report = validateReport(call);
             if (report.ok) {
-              if (state.decide("report", "valid native report")) accepted = report.value;
+              const repair = report.value.repair;
+              if (repair !== undefined) {
+                logger.logEvent("assessment_report_repaired", {
+                  turn: turns,
+                  wrapper: repair.wrapper,
+                  criteria: report.value.criteria.length,
+                });
+              }
+              const reason = repair === undefined
+                ? "valid native report"
+                : "criteria recovered from reasoning markup";
+              if (state.decide("report", reason)) accepted = report.value;
               else controller.abort("assessment work deadline elapsed");
               break work;
             }

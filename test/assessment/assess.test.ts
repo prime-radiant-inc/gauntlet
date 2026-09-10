@@ -646,6 +646,41 @@ describe("runAssessment", () => {
     }
   });
 
+  test("accepts criteria recovered from reasoning markup and marks the repair", async () => {
+    const native = report("pass");
+    const { criteria, ...rest } = native.toolCalls[0].arguments as Record<string, unknown> & {
+      criteria: unknown[];
+    };
+    const markup = response([{
+      id: "report-markup",
+      name: "report_result",
+      arguments: {
+        ...rest,
+        reasoning: `pass reasoning from retained evidence</reasoning> <criteria>${JSON.stringify(criteria)}</criteria>`,
+      },
+    }]);
+    const client = new ScriptedClient([readVisible(), markup]);
+    const fx = fixture(client);
+    try {
+      const result = await fx.run();
+      expect(result.status).toBe("pass");
+      expect(result.reasoning).toBe("pass reasoning from retained evidence");
+      expect(result.criteria).toHaveLength(1);
+      expect(result.usage?.turns).toBe(2);
+      const events = readFileSync(join(fx.outDir, "run.jsonl"), "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as Record<string, unknown>);
+      expect(
+        events.filter((event) => event.type === "event" && event.name === "assessment_report_repaired"),
+      ).toEqual([expect.objectContaining({ turn: 2, wrapper: "<criteria>", criteria: 1 })]);
+      expect(JSON.parse(readFileSync(join(fx.outDir, "assessment-completion.json"), "utf8")))
+        .toMatchObject({ status: "completed", reason: "criteria recovered from reasoning markup" });
+    } finally {
+      rmSync(fx.root, { recursive: true, force: true });
+    }
+  });
+
   test("an earlier read permits a report alongside a same-response reread", async () => {
     const reread = { id: "reread", name: "read_evidence", arguments: { path: "visible/001.txt" } };
     const finalReport = { ...report("pass").toolCalls[0], id: "final" };
