@@ -641,6 +641,15 @@ describe("runAssessment", () => {
       expect(client.toolResults[1][0].text).toMatch(/references/i);
       expect(result.status).toBe("pass");
       expect(result.usage?.turns).toBe(3);
+      expect(JSON.parse(readFileSync(join(fx.outDir, "assessment-completion.json"), "utf8")))
+        .toMatchObject({ status: "completed", reason: "valid native report" });
+      const events = readFileSync(join(fx.outDir, "run.jsonl"), "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as Record<string, unknown>);
+      expect(
+        events.filter((event) => event.type === "event" && event.name === "assessment_report_repaired"),
+      ).toEqual([]);
     } finally {
       rmSync(fx.root, { recursive: true, force: true });
     }
