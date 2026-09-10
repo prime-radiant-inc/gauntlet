@@ -1,3 +1,4 @@
+import { assessmentDeadline } from "../assessment/lifecycle";
 import type { CliArgsInput } from "../config";
 import { basename, isAbsolute } from "node:path";
 import { ADAPTER_TYPES, isAdapterType, type AdapterType } from "../adapters/adapter";
@@ -72,7 +73,7 @@ const CONVERSE_ALLOWED = new Set([
   "launcher", "workspace", "out", "completion", "tmux-socket", "model", "max-time", "startup",
 ]);
 const ASSESS_ALLOWED = new Set([
-  "evidence-root", "evidence-index", "out", "model", "max-time",
+  "evidence-root", "evidence-index", "out", "model", "max-time", "hard-deadline-at-ms",
 ]);
 
 function rejectUnknownFlags(
@@ -170,6 +171,7 @@ export interface ConverseArgs {
 }
 
 export interface AssessArgs {
+  hardDeadlineAtMs?: number;
   command: "assess";
   rubricPath: string;
   evidenceRoot: string;
@@ -248,6 +250,14 @@ function parseAssessArgs(args: string[]): AssessArgs {
   if (!runId) throw new Error("--out basename must be a valid Gauntlet run id");
   const cardId = asCardId(runId.split("_")[0]);
 
+  const rawDeadline = flags["hard-deadline-at-ms"];
+  const hardDeadlineAtMs = rawDeadline === undefined ? undefined : Number(rawDeadline);
+  if (rawDeadline !== undefined && (!/^-?\d+$/.test(rawDeadline) || !Number.isSafeInteger(hardDeadlineAtMs))) {
+    throw new Error("--hard-deadline-at-ms must be a finite safe-integer epoch millisecond value");
+  }
+  const maxTimeMs = parseDuration(flags["max-time"]!);
+  assessmentDeadline({ nowMs: Date.now(), maxTimeMs, hardDeadlineAtMs });
+
   return {
     command: "assess",
     rubricPath,
@@ -255,7 +265,8 @@ function parseAssessArgs(args: string[]): AssessArgs {
     evidenceIndexPath: flags["evidence-index"]!,
     outDir: flags.out!,
     model: modelFlag.slice("agent=".length),
-    maxTimeMs: parseDuration(flags["max-time"]!),
+    maxTimeMs,
+    ...(hardDeadlineAtMs === undefined ? {} : { hardDeadlineAtMs }),
     runId,
     cardId,
   };
@@ -641,7 +652,8 @@ Commands:
     --evidence-index <path> (required) Absolute evidence index path
     --out <dir>             (required) Exact assessment result directory
     --model agent=<name>    (required) Assessment model
-    --max-time <duration>   (required) Assessment wall-clock budget
+    --max-time <duration>   (required) Total assessment allowance, including a five-second finalization reserve
+    --hard-deadline-at-ms <integer>  Inherited hard deadline in epoch milliseconds (includes startup)
 
   converse <user-brief.md>  Run the simulated user against a prepared terminal subject
     --launcher <path>       (required) Absolute subject launcher path

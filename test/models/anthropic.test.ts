@@ -392,3 +392,104 @@ describe.skipIf(skip)("AnthropicClient integration", () => {
     expect(msg).toEqual({ role: "user", content: "hello" });
   });
 });
+
+
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { attemptRows, withAssessmentFixture } from "./assessment-fixture";
+
+const fixtureModel = "anthropic.claude-sonnet-5";
+const fixtureResponse = { id: "msg_fixture", type: "message", role: "assistant", model: fixtureModel, content: [{ type: "text", text: "fixture answer" }], stop_reason: "end_turn", stop_sequence: null, usage: { input_tokens: 10, output_tokens: 4 } };
+const withAnthropicAssessmentFixture = withAssessmentFixture({
+  provider: "anthropic",
+  model: fixtureModel,
+  createClient: createAnthropicClient,
+  env: baseURL => ({
+    ANTHROPIC_BASE_URL: baseURL,
+    ANTHROPIC_API_KEY: "fixture-api-key",
+    CLAUDE_CODE_OAUTH_TOKEN: "fixture-oauth",
+    ANTHROPIC_AUTH_TOKEN: undefined,
+  }),
+});
+
+describe("anthropic assessment request control through the pinned SDK", () => {
+  test("two HTTP retries consume three attempts; a continuation is refused without changing body or auth", async () => {
+    const seen: Array<{ body: string; headers: Headers }> = [];
+    await withAnthropicAssessmentFixture(async (request, index) => {
+      seen.push({ body: await request.text(), headers: request.headers });
+      return index < 2
+        ? Response.json({ type: "error", error: { type: "rate_limit_error", message: "fixture retry" } }, { status: 429, headers: { "retry-after-ms": "1" } })
+        : Response.json(fixtureResponse);
+    }, async ({ client, journal, outDir }) => {
+      const messages = [client.userMessage("unchanged prompt")];
+      const tools = [{ name: "submit", description: "Submit report", parameters: { type: "object", properties: { ok: { type: "boolean" } }, required: ["ok"] } }];
+      const controlled = await client.chat(messages, tools, "unchanged instructions", { runId: "fixture-run", assessment: journal.forRequest("logical-1", new AbortController().signal) });
+      expect(controlled.text).toBe("fixture answer");
+      expect(journal.snapshot()).toMatchObject({ admitted: 3, settled: 3, unknownUsageAttemptIds: ["001", "002"], usage: { inputTokens: 10, outputTokens: 4 } });
+      await expect(client.chat(messages, tools, "unchanged instructions", { assessment: journal.forRequest("logical-2", new AbortController().signal) })).rejects.toThrow();
+      expect(seen).toHaveLength(3);
+      await client.chat(messages, tools, "unchanged instructions", { runId: "fixture-run" });
+      expect(seen).toHaveLength(4);
+      for (const request of seen) expect(JSON.parse(request.body)).toEqual(JSON.parse(seen[3].body));
+      expect(seen[2].headers.get("authorization")).toBe(seen[3].headers.get("authorization"));
+      expect(seen[2].headers.get("x-api-key")).toBeNull();
+      expect(seen[2].headers.get("anthropic-beta")).toContain("oauth-2025-04-20");
+      const events = attemptRows(outDir);
+      expect(events.filter(e => e.event === "admission").map(e => [e.assessment_request_id, e.assessment_attempt_id])).toEqual([["logical-1", "001"], ["logical-1", "002"], ["logical-1", "003"]]);
+      const settlements = events.filter(e => e.event === "settlement");
+      expect(settlements.map(e => e.usage)).toEqual(["not_returned", "not_returned", "recorded"]);
+      expect(attemptRows(outDir, "usage.jsonl")).toHaveLength(1);
+      expect(readFileSync(join(outDir, settlements[2].request_body_path), "utf8")).toBe(seen[2].body);
+    });
+  });
+
+  test("cancellation aborts a pending request while an unrelated concurrent client completes", async () => {
+    let started!: () => void;
+    const firstRequest = new Promise<void>(resolve => { started = resolve; });
+    let release!: (response: Response) => void;
+    let releaseTimer: ReturnType<typeof setTimeout>;
+    await withAnthropicAssessmentFixture((_request, index) => {
+      if (index > 0) return Response.json(fixtureResponse);
+      started();
+      return new Promise<Response>(resolve => {
+        release = resolve;
+        releaseTimer = setTimeout(() => resolve(Response.json(fixtureResponse)), 100);
+      });
+    }, async ({ client, journal, outDir }) => {
+      const abort = new AbortController();
+      const pending = client.chat([client.userMessage("pending")], [], "system", { assessment: journal.forRequest("pending", abort.signal) });
+      await firstRequest;
+      const unrelated = createAnthropicClient(fixtureModel).chat([client.userMessage("ordinary")], [], "system");
+      abort.abort();
+      try {
+        await expect(pending).rejects.toThrow();
+        expect((await unrelated).text).toBe("fixture answer");
+        expect(journal.snapshot()).toMatchObject({ admitted: 1, settled: 1, unknownUsageAttemptIds: ["001"] });
+        expect(attemptRows(outDir)[1]).toMatchObject({ outcome: "aborted", usage: "not_returned" });
+      } finally { clearTimeout(releaseTimer); release(Response.json(fixtureResponse)); }
+    });
+  });
+
+  test("an SDK retry after work expiry never reaches the fixture", async () => {
+    let expire!: () => void;
+    let requests = 0;
+    await withAnthropicAssessmentFixture(() => {
+      requests++;
+      expire();
+      return Response.json({ type: "error", error: { message: "retry after expiry" } }, { status: 429, headers: { "retry-after-ms": "1" } });
+    }, async ({ client, journal, expire: expireWork }) => {
+      expire = expireWork;
+      await expect(client.chat([client.userMessage("test")], [], "system", { assessment: journal.forRequest("expired", new AbortController().signal) })).rejects.toThrow();
+      expect(requests).toBe(1);
+      expect(journal.snapshot().admitted).toBe(1);
+    });
+  });
+
+  test("native usage is written even when adapter conversion rejects model output", async () => {
+    await withAnthropicAssessmentFixture(() => Response.json({ ...fixtureResponse, content: null }), async ({ client, journal, outDir }) => {
+      await expect(client.chat([client.userMessage("test")], [], "system", { assessment: journal.forRequest("bad-content", new AbortController().signal) })).rejects.toThrow();
+      expect(journal.snapshot()).toMatchObject({ admitted: 1, settled: 1, unknownUsageAttemptIds: [], usage: { inputTokens: 10, outputTokens: 4 } });
+      expect(attemptRows(outDir, "usage.jsonl")).toHaveLength(1);
+    });
+  });
+});

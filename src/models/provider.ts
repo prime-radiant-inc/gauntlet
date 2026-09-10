@@ -1,3 +1,5 @@
+import type { AssessmentRequestControl } from "./assessment-request";
+
 export type Provider = "anthropic" | "openai";
 
 export interface ToolDefinition {
@@ -174,13 +176,13 @@ export interface AgentResponse {
 }
 
 /**
- * Optional per-request context. Currently used by the OpenAI adapter
- * for `prompt_cache_key` (set to `runId`) to improve routing
- * stickiness across turns of the same run. Anthropic ignores it; its
- * caching uses `cache_control` breakpoints, not key-based routing.
+ * Optional per-request context. OpenAI uses runId for prompt_cache_key;
+ * both adapters use assessment for request-scoped cancellation and capture.
+ * Anthropic caching uses cache_control breakpoints, not key-based routing.
  */
 export interface RequestContext {
   runId?: string;
+  assessment?: AssessmentRequestControl;
 }
 
 export interface LLMClient {

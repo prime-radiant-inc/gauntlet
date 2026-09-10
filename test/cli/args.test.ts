@@ -321,6 +321,26 @@ describe("assess command", () => {
     });
   });
 
+  test("accepts a safe integer inherited epoch deadline only for assess", () => {
+    expect(parseArgs([...argv, "--hard-deadline-at-ms", "1788955320000"]))
+      .toMatchObject({ hardDeadlineAtMs: 1788955320000 });
+    expect(() => parseArgs(["bun", "index.ts", "run", "card.md", "--hard-deadline-at-ms", "1788955320000"]))
+      .toThrow(/Unknown flag/);
+  });
+
+  test.each(["NaN", "Infinity", "1.5", "123junk", "1e3", "9007199254740992", "true", ""])(
+    "rejects an invalid inherited deadline %j", (value) => {
+      expect(() => parseArgs([...argv, "--hard-deadline-at-ms", value]))
+        .toThrow(/hard-deadline-at-ms.*integer/i);
+    },
+  );
+
+  test.each(["0ms", "4999ms", "5s"])("rejects an allowance without work time: %s", (value) => {
+    const invalid = [...argv];
+    invalid[invalid.indexOf("--max-time") + 1] = value;
+    expect(() => parseArgs(invalid)).toThrow(/reserve|deadline|positive/);
+  });
+
   test("requires every assessment role flag", () => {
     for (const flag of [
       "--evidence-root", "--evidence-index", "--out", "--model", "--max-time",
