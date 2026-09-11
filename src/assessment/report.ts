@@ -86,7 +86,7 @@ export function recoverCriteriaFromReasoning(
 
 export const ASSESSMENT_REPORT_TOOL: ToolDefinition = {
   name: "report_result",
-  description: "Report your assessment result. Call this when you are done assessing.",
+  description: "Report criterion verdicts derived from your source-fact and material-claim audit. Include concise evidence summaries that make claim coverage auditable.",
   strict: true,
   parameters: {
     type: "object",
@@ -109,19 +109,19 @@ export const ASSESSMENT_REPORT_TOOL: ToolDefinition = {
             verdict: reportCriterionProperties.verdict,
             observation: {
               type: "string",
-              description: "What the retained evidence directly shows.",
+              description: "Facts and conditions directly established from retained evidence, distinguished from claims made by the delivery.",
             },
             basis: {
               type: "string",
               description:
-                "Why the observation supports this verdict for the criterion as stated. " +
-                "Preserve its obligation, entities, conditions, and relationships; identify any inference.",
+                "Concise audit of each material claim relevant to this criterion: supported, contradicted, or unestablished at its stated scope, with support or a compatible counterexample. " +
+                "For a whole-delivery obligation, include additional findings, consequences, and claims in incorporated reports. Explain how the audit determines the verdict; preserve the obligation, entities, conditions, and relationships, and identify inference.",
             },
             limitations: {
               type: "string",
               description:
-                "Contrary evidence or missing context and how it affects this verdict. " +
-                "Distinguish a complete inspected delivery that omits a requirement from unavailable evidence.",
+                "Contrary evidence, unchecked claims, or missing context and their effect on this verdict. " +
+                "Distinguish clearly unsupported claims and a complete inspected delivery that omits a requirement from unavailable evidence; do not claim whole-delivery grounding when coverage is incomplete.",
             },
             references: {
               type: "array",
