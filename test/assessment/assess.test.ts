@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import * as agentModule from "../../src/agent/agent";
 import * as sharedToolsModule from "../../src/agent/shared-tools";
+import * as scopedReadModule from "../../src/context/scoped-read";
 import { assessmentClock, runAssessment, type AssessOptions } from "../../src/assessment/assess";
 import { assessmentExitCode } from "../../src/cli/assess";
 import { EvidenceLogger } from "../../src/evidence/logger";
@@ -991,4 +992,43 @@ test("an abort-ignoring work request cannot delay grace or change sealed publica
     const events = before[2].trim().split("\n").map(line => JSON.parse(line));
     expect(events.find(event => event.type === "tool_call" && event.name === "report_result").turn).toBe(3);
   } finally { rmSync(fx.root, { recursive: true, force: true }); }
+});
+
+
+test.each(["visible/001.txt", "private-history.jsonl"])("dispatch expiry closes every tool call and only credits completed reads: %s", async reference => {
+  let now = 0;
+  const readPaths: string[] = [];
+  const readEvidence = scopedReadModule.readEvidenceFile;
+  const read = jest.spyOn(scopedReadModule, "readEvidenceFile").mockImplementation((...args) => {
+    const contents = readEvidence(...args);
+    readPaths.push(args[2]);
+    now = 55000;
+    return contents;
+  });
+  const client = new ScriptedClient([
+    response([
+      { id: "completed-read", name: "read_evidence", arguments: { path: "visible/001.txt" } },
+      { id: "unexecuted-read", name: "read_evidence", arguments: { path: "private-history.jsonl" } },
+    ]),
+    history => {
+      const assistant = history.find((entry: any) => entry.role === "assistant") as { toolCalls: ToolCall[] };
+      const results = history.filter((entry: any) => entry.role === "tool_result") as Array<{ tool_call_id: string; content: string }>;
+      expect(results.map(result => result.tool_call_id)).toEqual(assistant.toolCalls.map(call => call.id));
+      expect(results[0].content).toContain("The subject visibly refused");
+      expect(client.toolResults[0][0].isError).not.toBe(true);
+      expect(client.toolResults[0][1].isError).toBe(true);
+      return report("pass", [reference]);
+    },
+  ]);
+  const fx = fixture(client, ["visible/001.txt", "private-history.jsonl"]);
+  try {
+    const outcome = fx.run({ now: () => now, reportGraceMs: 60000 });
+    if (reference === "visible/001.txt") expect((await outcome).status).toBe("pass");
+    else await expect(outcome).rejects.toThrow(/has not been read/);
+    expect(readPaths).toEqual(["visible/001.txt"]);
+    expect(client.toolLists.at(-1)?.map(tool => tool.name)).toEqual(["report_result"]);
+    expect(client.histories).toHaveLength(2);
+    expect(JSON.parse(readFileSync(join(fx.outDir, "assessment-completion.json"), "utf8")).status)
+      .toBe(reference === "visible/001.txt" ? "completed" : "errored");
+  } finally { read.mockRestore(); rmSync(fx.root, { recursive: true, force: true }); }
 });

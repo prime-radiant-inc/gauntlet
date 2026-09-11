@@ -378,7 +378,7 @@ export async function runAssessment(options: AssessOptions): Promise<VetResult> 
       const responseEvidencePaths: string[] = [];
       for (const call of response.toolCalls) {
         if (stopped()) break work;
-        if (requestController !== controller) continue work;
+        const inspectionEnded = requestController !== controller;
         logger.logToolCall({
           turn: requests,
           toolUseId: call.id,
@@ -389,7 +389,12 @@ export async function runAssessment(options: AssessOptions): Promise<VetResult> 
         let result: ToolResult;
         let error = false;
         try {
-          if (call.name === "report_result") {
+          if (inspectionEnded) {
+            // The assistant turn is already in history. Close every pending
+            // call without inspecting more evidence before requesting a report.
+            result = textResult("Error: inspection ended; this tool call was not executed.");
+            error = true;
+          } else if (call.name === "report_result") {
             const report = validateReport(call);
             if (report.ok) {
               const repair = report.value.repair;
