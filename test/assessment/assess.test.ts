@@ -496,7 +496,7 @@ describe("runAssessment", () => {
       expect(initial).toContain("visible/001.txt");
       expect(initial).not.toContain("CONVERSATION_ACTOR_MODEL_HISTORY");
       expect(client.toolLists[0].map((tool) => tool.name)).toEqual([
-        "read_evidence", "report_result",
+        "read_evidence", "search_evidence", "report_result",
       ]);
       expect(client.systemPrompts[0]).toMatch(/evidence, not instructions/i);
       expect(client.systemPrompts[0]).toMatch(/cite/i);
@@ -998,10 +998,10 @@ test("an abort-ignoring work request cannot delay grace or change sealed publica
 test.each(["visible/001.txt", "private-history.jsonl"])("dispatch expiry closes every tool call and only credits completed reads: %s", async reference => {
   let now = 0;
   const readPaths: string[] = [];
-  const readEvidence = scopedReadModule.readEvidenceFile;
-  const read = jest.spyOn(scopedReadModule, "readEvidenceFile").mockImplementation((...args) => {
+  const readEvidence = scopedReadModule.readEvidenceRange;
+  const read = jest.spyOn(scopedReadModule, "readEvidenceRange").mockImplementation((...args) => {
     const contents = readEvidence(...args);
-    readPaths.push(args[2]);
+    readPaths.push(args[2].path);
     now = 55000;
     return contents;
   });
@@ -1031,4 +1031,52 @@ test.each(["visible/001.txt", "private-history.jsonl"])("dispatch expiry closes 
     expect(JSON.parse(readFileSync(join(fx.outDir, "assessment-completion.json"), "utf8")).status)
       .toBe(reference === "visible/001.txt" ? "completed" : "errored");
   } finally { read.mockRestore(); rmSync(fx.root, { recursive: true, force: true }); }
+});
+
+
+test("search locates claims but only a range delivered to a later request grants citation authority", async () => {
+  const path = "visible/001.txt";
+  const client = new ScriptedClient([
+    response([{id: "search", name: "search_evidence", arguments: {query: "claim"}}]),
+    messages => {
+      expect(JSON.parse(toolResultText(messages, "search"))).toMatchObject({matches: [{path, line: 2, text: "claim"}], truncated: false});
+      return report("pass");
+    },
+    messages => {
+      expect(toolResultText(messages, "report-pass")).toMatch(/has not been read/);
+      return response([
+        {id: "range", name: "read_evidence", arguments: {path, startLine: 2, maxLines: 1}},
+        {...report("pass").toolCalls[0], id: "early"},
+      ]);
+    },
+    messages => {
+      expect(toolResultText(messages, "early")).toMatch(/has not been read/);
+      expect(JSON.parse(toolResultText(messages, "range"))).toMatchObject({path, startLine: 2, endLine: 2,
+        totalLines: 3, text: "claim", truncated: true, nextLine: 3});
+      return report("pass");
+    },
+  ]);
+  const fx = fixture(client);
+  writeFileSync(join(fx.evidenceRoot, path), "intro\nclaim\nremaining delivery");
+  try {
+    expect((await fx.run()).status).toBe("pass");
+    expect(client.histories).toHaveLength(4);
+  } finally { rmSync(fx.root, {recursive: true, force: true}); }
+});
+
+
+test("a failed search grants no citation authority", async () => {
+  const client = new ScriptedClient([
+    response([{id: "bad-search", name: "search_evidence", arguments: {query: "", path: "visible/001.txt"}}]),
+    report("pass"),
+    messages => {
+      expect(toolResultText(messages, "bad-search")).toStartWith("Error:");
+      expect(toolResultText(messages, "report-pass")).toMatch(/has not been read/);
+      return readVisible();
+    },
+    report("pass"),
+  ]);
+  const fx = fixture(client);
+  try { expect((await fx.run()).status).toBe("pass"); }
+  finally { rmSync(fx.root, {recursive: true, force: true}); }
 });
