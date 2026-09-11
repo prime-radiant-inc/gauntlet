@@ -2,8 +2,8 @@ import { expect, test } from "bun:test";
 import { assessmentDeadline, createAssessmentDecision } from "../../src/assessment/lifecycle";
 
 test("startup time is not granted again and stop beats a late report", () => {
-  const d = assessmentDeadline({ nowMs: 20_000, maxTimeMs: 120_000, hardDeadlineAtMs: 120_000 });
-  expect(d).toEqual({ workDeadlineAtMs: 115_000, hardDeadlineAtMs: 120_000 });
+  const d = assessmentDeadline({ reportGraceMs: 0, nowMs: 20_000, maxTimeMs: 120_000, hardDeadlineAtMs: 120_000 });
+  expect(d).toEqual({ workDeadlineAtMs: 115_000, reportDeadlineAtMs: 115_000, hardDeadlineAtMs: 120_000 });
   let now = 114_999;
   const state = createAssessmentDecision(d.workDeadlineAtMs, () => now);
   expect(state.decide("cancelled", "operator cancelled")).toBe(true);
@@ -13,12 +13,12 @@ test("startup time is not granted again and stop beats a late report", () => {
 });
 
 test.each([
-  [{ nowMs: 0, maxTimeMs: 120_000 }, { workDeadlineAtMs: 115_000, hardDeadlineAtMs: 120_000 }],
-  [{ nowMs: 20_000, maxTimeMs: 10_000, hardDeadlineAtMs: 120_000 }, { workDeadlineAtMs: 25_000, hardDeadlineAtMs: 30_000 }],
-  [{ nowMs: 20_000, maxTimeMs: 120_000, hardDeadlineAtMs: 0 }, { workDeadlineAtMs: -5_000, hardDeadlineAtMs: 0 }],
-  [{ nowMs: 0, maxTimeMs: 5_001 }, { workDeadlineAtMs: 1, hardDeadlineAtMs: 5_001 }],
+  [{ nowMs: 0, maxTimeMs: 120_000 }, { workDeadlineAtMs: 115_000, reportDeadlineAtMs: 115_000, hardDeadlineAtMs: 120_000 }],
+  [{ nowMs: 20_000, maxTimeMs: 10_000, hardDeadlineAtMs: 120_000 }, { workDeadlineAtMs: 25_000, reportDeadlineAtMs: 25_000, hardDeadlineAtMs: 30_000 }],
+  [{ nowMs: 20_000, maxTimeMs: 120_000, hardDeadlineAtMs: 0 }, { workDeadlineAtMs: -5_000, reportDeadlineAtMs: -5_000, hardDeadlineAtMs: 0 }],
+  [{ nowMs: 0, maxTimeMs: 5_001 }, { workDeadlineAtMs: 1, reportDeadlineAtMs: 1, hardDeadlineAtMs: 5_001 }],
 ])("reserves finalization time within both allowances: %j", (input, expected) => {
-  expect(assessmentDeadline(input)).toEqual(expected);
+  expect(assessmentDeadline({ reportGraceMs: 0, ...input })).toEqual(expected);
 });
 
 test.each([
@@ -38,11 +38,11 @@ test.each([
   { nowMs: 0, maxTimeMs: 120_000, hardDeadlineAtMs: 1.5 },
   { nowMs: 0, maxTimeMs: 120_000, hardDeadlineAtMs: Number.MAX_SAFE_INTEGER + 1 },
 ])("rejects an invalid allowance before work starts: %j", (input) => {
-  expect(() => assessmentDeadline(input)).toThrow("invalid assessment deadline");
+  expect(() => assessmentDeadline({ reportGraceMs: 0, ...input })).toThrow("invalid assessment deadline");
 });
 
 test.each([115_000, 120_001])("expired inherited work time cannot accept a report at %i", (nowMs) => {
-  const deadline = assessmentDeadline({ nowMs, maxTimeMs: 120_000, hardDeadlineAtMs: 120_000 });
+  const deadline = assessmentDeadline({ reportGraceMs: 0, nowMs, maxTimeMs: 120_000, hardDeadlineAtMs: 120_000 });
   const state = createAssessmentDecision(deadline.workDeadlineAtMs, () => nowMs);
   expect(state.current()).toBeNull();
   expect(state.decide("report", "valid native report")).toBe(false);
@@ -67,4 +67,22 @@ test("reading a decision cannot mutate the selected outcome", () => {
   state.decide("cancelled", "operator cancelled");
   state.current()!.kind = "report";
   expect(state.current()?.kind).toBe("cancelled");
+});
+
+
+test("separates inspection, report, and publication within the inherited total", () => {
+  expect(assessmentDeadline({ nowMs: 1000, maxTimeMs: 600000, reportGraceMs: 60000 })).toEqual({
+    workDeadlineAtMs: 536000, reportDeadlineAtMs: 596000, hardDeadlineAtMs: 601000,
+  });
+  expect(assessmentDeadline({ nowMs: 1000, maxTimeMs: 600000, reportGraceMs: 60000, hardDeadlineAtMs: 301000 })).toEqual({
+    workDeadlineAtMs: 236000, reportDeadlineAtMs: 296000, hardDeadlineAtMs: 301000,
+  });
+});
+
+test.each([-1, NaN, Infinity, 0.5, 115000, 120000, Number.MAX_SAFE_INTEGER])("rejects invalid report grace %s", reportGraceMs => {
+  expect(() => assessmentDeadline({ nowMs: 0, maxTimeMs: 120000, reportGraceMs })).toThrow("invalid assessment deadline");
+});
+
+test.each([120000.5, Number.MAX_SAFE_INTEGER])("rejects unsafe duration arithmetic %s", maxTimeMs => {
+  expect(() => assessmentDeadline({ nowMs: 1000, maxTimeMs, reportGraceMs: 0 })).toThrow("invalid assessment deadline");
 });
