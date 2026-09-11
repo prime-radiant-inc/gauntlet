@@ -73,7 +73,7 @@ const CONVERSE_ALLOWED = new Set([
   "launcher", "workspace", "out", "completion", "tmux-socket", "model", "max-time", "startup",
 ]);
 const ASSESS_ALLOWED = new Set([
-  "evidence-root", "evidence-index", "out", "model", "max-time", "hard-deadline-at-ms",
+  "evidence-root", "evidence-index", "out", "model", "max-time", "hard-deadline-at-ms", "report-grace",
 ]);
 
 function rejectUnknownFlags(
@@ -179,6 +179,7 @@ export interface AssessArgs {
   outDir: string;
   model: string;
   maxTimeMs: number;
+  reportGraceMs: number;
   runId: RunId;
   cardId: CardId;
 }
@@ -256,7 +257,8 @@ function parseAssessArgs(args: string[]): AssessArgs {
     throw new Error("--hard-deadline-at-ms must be a finite safe-integer epoch millisecond value");
   }
   const maxTimeMs = parseDuration(flags["max-time"]!);
-  assessmentDeadline({ nowMs: Date.now(), maxTimeMs, hardDeadlineAtMs });
+  const reportGraceMs = flags["report-grace"] === undefined ? 0 : parseDuration(flags["report-grace"]);
+  assessmentDeadline({ nowMs: Date.now(), maxTimeMs, reportGraceMs, hardDeadlineAtMs });
 
   return {
     command: "assess",
@@ -266,6 +268,7 @@ function parseAssessArgs(args: string[]): AssessArgs {
     outDir: flags.out!,
     model: modelFlag.slice("agent=".length),
     maxTimeMs,
+    reportGraceMs,
     ...(hardDeadlineAtMs === undefined ? {} : { hardDeadlineAtMs }),
     runId,
     cardId,
@@ -653,6 +656,7 @@ Commands:
     --out <dir>             (required) Exact assessment result directory
     --model agent=<name>    (required) Assessment model
     --max-time <duration>   (required) Total assessment allowance, including a five-second finalization reserve
+    --report-grace <duration>  Final report opportunity within the total allowance (default: zero)
     --hard-deadline-at-ms <integer>  Inherited hard deadline in epoch milliseconds (includes startup)
 
   converse <user-brief.md>  Run the simulated user against a prepared terminal subject

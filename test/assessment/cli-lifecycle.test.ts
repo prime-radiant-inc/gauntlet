@@ -41,7 +41,7 @@ const originalFetch = globalThis.fetch;
 globalThis.fetch = async (...args) => {
   const response = await originalFetch(...args);
   const value = response.headers.get("x-fixture-time");
-  if (value && ["cancel-before", "late"].includes(${JSON.stringify(mode)})) {
+  if (value && ["cancel-before", "late", "grace", "grace-late", "grace-retry", "grace-retry-expired"].includes(${JSON.stringify(mode)})) {
     // These cases exercise an already returned body at the report boundary.
     // fetch resolves on headers; drain the actual localhost bytes before the
     // synthetic signal/clock change, independently of OS packet buffering.
@@ -101,6 +101,7 @@ spyOn(fs, "unlinkSync").mockImplementation(path => {
 type CliOptions = {
   verdict?: "pass" | "fail" | "unclear";
   maxTime?: string;
+  reportGrace?: string;
   hardDeadline?: number;
   mode?: string;
   startupDelayMs?: number;
@@ -129,7 +130,7 @@ async function withCli(options: CliOptions, check: (fx: {
   let child: ReturnType<typeof Bun.spawn> | undefined;
   const timers: ReturnType<typeof setTimeout>[] = [];
   const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    await request.json();
+    const requestBody = await request.json() as { tools: Array<{ name: string }> };
     const index = requests++;
     if (options.signal) {
       timers.push(setTimeout(() => child!.kill(options.signal), 5));
@@ -137,13 +138,22 @@ async function withCli(options: CliOptions, check: (fx: {
     } else if (options.maxTime === "5100ms") {
       await new Promise(resolve => { timers.push(setTimeout(resolve, 300)); });
     }
+    if (options.mode?.startsWith("grace") && index >= 2) {
+      if (JSON.stringify(requestBody.tools.map(tool => tool.name)) !== JSON.stringify(["report_result"])) {
+        return Response.json({ error: { message: "inspection tool leaked into grace" } }, { status: 400 });
+      }
+      if (options.mode?.startsWith("grace-retry") && index === 2) return Response.json({ type: "error", error: { type: "rate_limit_error", message: "fixture grace retry" } },
+        { status: 429, headers: { "retry-after-ms": "1", ...(options.mode === "grace-retry-expired" ? { "x-fixture-time": "115000" } : {}) } });
+    }
     if (options.apiError) return Response.json({ type: "error", error: { type: "invalid_request_error", message: "fixture API error" } }, { status: 400 });
     if (options.retry && index < 2) return Response.json({ type: "error", error: { type: "rate_limit_error", message: "fixture retry" } },
       { status: 429, headers: { "retry-after-ms": "1" } });
     const reply = nativeReply(options.retry ? index - 2 : index, options.verdict);
     if (options.zeroCache) Object.assign(reply.usage, { cache_creation_input_tokens: 0, cache_read_input_tokens: 0 });
     const response = Response.json(options.conversionFailure ? { ...reply, content: null } : reply, {
-      headers: options.mode && index === 1 ? { "x-fixture-time": options.mode === "late" ? "115000" : "114999" } : {},
+      headers: options.mode?.startsWith("grace") && index >= 1
+        ? { "x-fixture-time": options.mode === "grace-late" && index >= 2 ? "115000" : "55000" }
+        : options.mode && index === 1 ? { "x-fixture-time": options.mode === "late" ? "115000" : "114999" } : {},
     });
     if (options.bodyDelayMs && index === 1) {
       const bytes = new TextEncoder().encode(await response.text());
@@ -167,6 +177,7 @@ async function withCli(options: CliOptions, check: (fx: {
     child = Bun.spawn([process.execPath, ...preloads, resolve("src/index.ts"), "assess", rubricPath,
       "--evidence-root", root, "--evidence-index", join(root, "index.json"), "--out", outDir,
       "--model", "agent=claude-sonnet-4-6", "--max-time", options.maxTime ?? "2m",
+      ...(options.reportGrace === undefined ? [] : ["--report-grace", options.reportGrace]),
       ...(options.hardDeadline === undefined ? [] : ["--hard-deadline-at-ms", String(options.hardDeadline)]),
       ...(options.verbose ? ["--verbose"] : []),
     ], {
@@ -405,5 +416,34 @@ test("CLI serialization omits zero cache totals while physical usage retains exp
     expect(JSON.parse(fx.stdout).usage).toEqual(expected);
     expect(fx.events.find(row => row.type === "run_end")?.usage).toEqual(expected);
     expect(fx.marker.accepted_report_sha256).toBe(createHash("sha256").update(readFileSync(join(fx.outDir, "result.json"))).digest("hex"));
+  });
+});
+
+
+test.each(["grace", "grace-late", "grace-retry"])("CLI SDK and journal bound and account for the report opportunity: %s", async mode => {
+  await withCli({ mode, reportGrace: "60s" }, fx => {
+    expect(fx.requests).toBe(mode === "grace-retry" ? 4 : 3);
+    expect(fx.marker?.status).toBe(mode === "grace-late" ? "timed_out" : "completed");
+    expect(fx.result.usage).toMatchObject({ inputTokens: 9, outputTokens: 6, turns: 3 });
+    expect(fx.usage).toHaveLength(3);
+    expect(fx.attempts.filter(row => row.event === "admission").map(row => row.assessment_request_id))
+      .toEqual(mode === "grace-retry" ? ["001", "002", "003", "003"] : ["001", "002", "003"]);
+    expect(fx.attempts.filter(row => row.event === "settlement")).toHaveLength(fx.requests);
+    if (mode === "grace-late") {
+      expect(fx.marker.accepted_report_sha256).toBeNull();
+      expect(fx.result.criteria).toBeUndefined();
+    }
+  });
+});
+
+
+test("SDK retry after report expiry admits no extra physical call", async () => {
+  await withCli({ mode: "grace-retry-expired", reportGrace: "60s" }, fx => {
+    expect(fx.requests).toBe(3);
+    expect(fx.marker?.status).toBe("timed_out");
+    expect(fx.usage).toHaveLength(2);
+    expect(fx.attempts.filter(row => row.event === "admission")).toHaveLength(3);
+    expect(fx.attempts.filter(row => row.event === "settlement")).toHaveLength(3);
+    expect(fx.attempts.at(-1)).toMatchObject({ usage: "not_returned", usage_unavailable: "api_error" });
   });
 });

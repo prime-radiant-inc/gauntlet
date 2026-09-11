@@ -316,9 +316,15 @@ describe("assess command", () => {
       outDir: "/run/gauntlet-agent/results/card-001_20260907T120000Z_ab12",
       model: "claude-sonnet-4-6",
       maxTimeMs: 120_000,
+      reportGraceMs: 0,
       runId: "card-001_20260907T120000Z_ab12",
       cardId: "card-001",
     });
+  });
+
+  test("parses explicit report grace and rejects a grace that consumes inspection", () => {
+    expect(parseArgs([...argv, "--report-grace", "60s"])).toMatchObject({ reportGraceMs: 60000 });
+    expect(() => parseArgs([...argv, "--report-grace", "115s"])).toThrow(/deadline/);
   });
 
   test("accepts a safe integer inherited epoch deadline only for assess", () => {

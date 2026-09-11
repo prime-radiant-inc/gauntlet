@@ -28,7 +28,7 @@ import { makeRunId } from "../../src/util/id";
 import { LlmError } from "../../src/util/sanitize-error";
 import type { RunId } from "../../src/util/brands";
 
-type Reply = AgentResponse | ((messages: unknown[]) => AgentResponse);
+type Reply = AgentResponse | ((messages: unknown[]) => AgentResponse | Promise<AgentResponse>);
 
 function response(toolCalls: ToolCall[], rawUsage: unknown = { input_tokens: 3, output_tokens: 2 }): AgentResponse {
   return {
@@ -195,6 +195,7 @@ function fixture(
       logger,
       runId,
       maxTimeMs: 120_000,
+      reportGraceMs: 0,
       ...overrides,
     }),
   };
@@ -323,9 +324,9 @@ describe("runAssessment", () => {
       expect(Object.keys(reportTool.input_schema.properties.criteria.items.properties)).toEqual([
         "verdict", "observation", "basis", "limitations", "references",
       ]);
-      expect(requestBodies[2].messages).toHaveLength(5);
-      expect(requestBodies[2].messages[3].content[0].input).toEqual(malformedArguments);
-      const firstRejection = requestBodies[2].messages[4].content[0];
+      const blocks = (index: number): any[] => requestBodies[index].messages.flatMap((message: any) => Array.isArray(message.content) ? message.content : []);
+      expect(blocks(2).find(block => block.id === "toolu_rejected").input).toEqual(malformedArguments);
+      const firstRejection = blocks(2).find(block => block.tool_use_id === "toolu_rejected");
       expect(firstRejection).toMatchObject({
         type: "tool_result",
         tool_use_id: "toolu_rejected",
@@ -363,10 +364,10 @@ describe("runAssessment", () => {
       expect(Array.isArray(illustrativeRow.references)).toBe(true);
       expect(typeof (illustrativeRow.references as unknown[])[0]).toBe("string");
 
-      expect(requestBodies[3].messages[5].content[0].input).toEqual(
+      expect(blocks(3).find(block => block.id === "toolu_rejected_again").input).toEqual(
         malformedClosingTagArguments,
       );
-      const secondRejection = requestBodies[3].messages[6].content[0];
+      const secondRejection = blocks(3).find(block => block.tool_use_id === "toolu_rejected_again");
       expect(secondRejection).toMatchObject({
         type: "tool_result",
         tool_use_id: "toolu_rejected_again",
@@ -846,6 +847,7 @@ describe("runAssessment", () => {
         logger: fx.logger,
         runId: differentRunId,
         maxTimeMs: 120_000,
+      reportGraceMs: 0,
       })).rejects.toThrow(/rubric|scenario|card/i);
     } finally {
       rmSync(fx.root, { recursive: true, force: true });
@@ -922,4 +924,71 @@ test("execution and publication errors remain distinct even when their completio
     expect(JSON.parse(readFileSync(join(fx.outDir, "assessment-completion.json"), "utf8")))
       .toMatchObject({ status: "errored", reason: original.message });
   } finally { fault.mockRestore(); rmSync(fx.root, { recursive: true, force: true }); }
+});
+
+
+test("work expiry discards the work report and gives delivered evidence one report-only opportunity", async () => {
+  let now = 0;
+  const client = new ScriptedClient([readVisible(), () => { now = 55000; return report("fail"); }, report("pass")]);
+  const fx = fixture(client);
+  try {
+    const result = await fx.run({ now: () => now, reportGraceMs: 60000 });
+    expect(result.status).toBe("pass");
+    expect(client.toolLists.at(-1)?.map(tool => tool.name)).toEqual(["report_result"]);
+    expect(JSON.parse(readFileSync(join(fx.outDir, "assessment-completion.json"), "utf8")).status).toBe("completed");
+  } finally { rmSync(fx.root, { recursive: true, force: true }); }
+});
+
+test.each(["expiry", "cancel", "cancel-grace", "unread", "malformed"])("report opportunity finalizes %s without another request", async mode => {
+  let now = 0;
+  const cancel = new AbortController();
+  const client = new ScriptedClient([
+    readVisible(),
+    () => { now = 55000; if (mode === "cancel") cancel.abort("operator cancelled"); return response([]); },
+    () => {
+      if (mode === "expiry") now = 115000;
+      if (mode === "cancel-grace") cancel.abort("operator cancelled during grace");
+      if (mode === "malformed") return response([]);
+      return report("pass", mode === "unread" ? ["private-history.jsonl"] : undefined);
+    },
+  ]);
+  const fx = fixture(client, ["visible/001.txt", "private-history.jsonl"]);
+  try {
+    const outcome = fx.run({ now: () => now, reportGraceMs: 60000, signal: cancel.signal });
+    if (mode === "unread" || mode === "malformed") await expect(outcome).rejects.toThrow(/final report opportunity exhausted/);
+    else await outcome;
+    const result = JSON.parse(readFileSync(join(fx.outDir, "result.json"), "utf8"));
+    expect(result.criteria).toBeUndefined();
+    expect(client.histories).toHaveLength(mode === "cancel" ? 2 : 3);
+    expect(JSON.parse(readFileSync(join(fx.outDir, "assessment-completion.json"), "utf8")))
+      .toMatchObject({ status: mode.startsWith("cancel") ? "cancelled" : mode === "expiry" ? "timed_out" : "errored", accepted_report_sha256: null });
+  } finally { rmSync(fx.root, { recursive: true, force: true }); }
+});
+
+test("startup inside report grace mounts no inspection tools", async () => {
+  const client = new ScriptedClient([report("unclear", [])]);
+  const fx = fixture(client);
+  try {
+    await expect(fx.run({ now: () => 60000, hardDeadlineAtMs: 120000, reportGraceMs: 60000 })).rejects.toThrow(/final report opportunity exhausted/);
+    expect(client.toolLists.map(tools => tools.map(tool => tool.name))).toEqual([["report_result"]]);
+    expect(JSON.parse(readFileSync(join(fx.outDir, "assessment-completion.json"), "utf8")).status).toBe("errored");
+  } finally { rmSync(fx.root, { recursive: true, force: true }); }
+});
+
+test("an abort-ignoring work request cannot delay grace or change sealed publication", async () => {
+  let late!: (response: AgentResponse) => void;
+  const client = new ScriptedClient([readVisible(), () => new Promise(resolve => { late = resolve; }), report("pass")]);
+  const fx = fixture(client);
+  try {
+    await fx.run({ maxTimeMs: 5150, reportGraceMs: 100 });
+    expect(client.histories).toHaveLength(3);
+    const files = ["assessment-completion.json", "result.json", "run.jsonl"];
+    const before = files.map(file => readFileSync(join(fx.outDir, file), "utf8"));
+    late(report("fail"));
+    await Bun.sleep(10);
+    expect(files.map(file => readFileSync(join(fx.outDir, file), "utf8"))).toEqual(before);
+    expect(JSON.parse(before[0]).status).toBe("completed");
+    const events = before[2].trim().split("\n").map(line => JSON.parse(line));
+    expect(events.find(event => event.type === "tool_call" && event.name === "report_result").turn).toBe(3);
+  } finally { rmSync(fx.root, { recursive: true, force: true }); }
 });

@@ -17,7 +17,7 @@ export async function assess(args: AssessArgs): Promise<VetResult> {
   // hard deadline into the loop prevents startup from creating a fresh allowance.
   const now = assessmentClock();
   const startedAt = now();
-  const deadline = assessmentDeadline({ nowMs: startedAt, maxTimeMs: args.maxTimeMs, hardDeadlineAtMs: args.hardDeadlineAtMs });
+  const deadline = assessmentDeadline({ nowMs: startedAt, maxTimeMs: args.maxTimeMs, reportGraceMs: args.reportGraceMs, hardDeadlineAtMs: args.hardDeadlineAtMs });
   const controller = new AbortController();
   const handlers = (["SIGTERM", "SIGINT", "SIGHUP"] as const).map(signal => {
     const handler = () => controller.abort(signal);
@@ -35,9 +35,11 @@ export async function assess(args: AssessArgs): Promise<VetResult> {
         model: args.model, adapter: "assessment", budgetMs: args.maxTimeMs,
         reflectionInterval: 0, toolTimeoutMs: 30_000, contextTreeBytes: 0, outDir: args.outDir,
       });
+      // Physical admission includes the final report; per-request cancellation
+      // ends inspection earlier without spending the report opportunity.
       journal = createAssessmentAttemptJournal({
         outDir: args.outDir, provider, model: args.model, now,
-        workDeadlineAtMs: deadline.workDeadlineAtMs, fetch, captureBodies: false, logger,
+        workDeadlineAtMs: deadline.reportDeadlineAtMs, fetch, captureBodies: false, logger,
       });
       inputs = {
         rubric: parseStoryCard(readFileSync(args.rubricPath, "utf8")),
@@ -62,7 +64,7 @@ export async function assess(args: AssessArgs): Promise<VetResult> {
     }
     return await runAssessment({
       ...inputs, evidenceRoot: args.evidenceRoot, outDir: args.outDir, logger,
-      runId: args.runId, maxTimeMs: args.maxTimeMs,
+      runId: args.runId, maxTimeMs: args.maxTimeMs, reportGraceMs: args.reportGraceMs,
       hardDeadlineAtMs: deadline.hardDeadlineAtMs, now, signal: controller.signal, attemptJournal: journal,
     });
   } finally {

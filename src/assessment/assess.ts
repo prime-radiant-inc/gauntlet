@@ -39,6 +39,7 @@ export type AssessOptions = {
   logger: EvidenceLogger;
   runId: RunId;
   maxTimeMs: number;
+  reportGraceMs: number;
   signal?: AbortSignal;
   hardDeadlineAtMs?: number;
   now?: () => number;
@@ -156,26 +157,40 @@ export async function runAssessment(options: AssessOptions): Promise<VetResult> 
   } = options;
   const now = options.now ?? assessmentClock();
   const startedAt = now();
-  const deadline = assessmentDeadline({ nowMs: startedAt, maxTimeMs, hardDeadlineAtMs: options.hardDeadlineAtMs });
-  const state = createAssessmentDecision(deadline.workDeadlineAtMs, now);
-  const controller = new AbortController();
+  const deadline = assessmentDeadline({ nowMs: startedAt, maxTimeMs, reportGraceMs: options.reportGraceMs, hardDeadlineAtMs: options.hardDeadlineAtMs });
+  const state = createAssessmentDecision(deadline.reportDeadlineAtMs, now);
+  let phase: "work" | "report" | "done" = "work";
+  let controller = new AbortController();
   const journal = options.attemptJournal;
   function stop(kind: "timed_out" | "cancelled", reason: string): void {
     state.decide(kind, reason);
+    phase = "done";
     controller.abort(reason);
+  }
+  function enterReport(): void {
+    if (phase !== "work") return;
+    phase = "report";
+    controller.abort("assessment work deadline elapsed");
+    controller = new AbortController();
   }
   const cancel = () => stop("cancelled", String(options.signal?.reason ?? "Assessment cancelled"));
   options.signal?.addEventListener("abort", cancel);
   if (options.signal?.aborted) cancel();
-  const timer = setTimeout(() => stop("timed_out", "assessment work deadline elapsed"),
-    Math.max(0, deadline.workDeadlineAtMs - now()));
   function stopped(): boolean {
-    if (now() >= deadline.workDeadlineAtMs) stop("timed_out", "assessment work deadline elapsed");
+    if (state.current() !== null) return true;
+    if (now() >= deadline.reportDeadlineAtMs) stop("timed_out", "assessment report deadline elapsed");
+    else if (now() >= deadline.workDeadlineAtMs) enterReport();
     return state.current() !== null;
   }
+  const workTimer = setTimeout(() => {
+    if (!stopped()) enterReport();
+  }, Math.max(0, deadline.workDeadlineAtMs - now()));
+  const reportTimer = setTimeout(() => stop("timed_out", "assessment report deadline elapsed"),
+    Math.max(0, deadline.reportDeadlineAtMs - now()));
   const firstMessage = initialMessage(rubric, evidenceIndex);
   const messages: unknown[] = [];
   let turns = 0;
+  let requests = 0;
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
   let totalCacheCreation = 0;
@@ -295,32 +310,66 @@ export async function runAssessment(options: AssessOptions): Promise<VetResult> 
     messages.push(client.userMessage(firstMessage));
 
     work: while (!stopped()) {
-      // Logical IDs equal the one-based request turn, padded to at least 3 digits.
-      // A rejected chat has a request event and physical settlements, no response.
-      const requestId = String(turns + 1).padStart(3, "0");
-      logger.logLlmRequest(turns + 1, messages.length, { assessment_request_id: requestId });
+      const requestPhase = phase as "work" | "report" | "done";
+      const requestController = controller;
+      const reminder = requestPhase === "report"
+        ? "The inspection period has ended. Use only evidence already delivered. Submit report_result now; mark unsupported or uninspected obligations unclear. No further evidence tools are available."
+        : `Remaining inspection time: ${Math.max(0, Math.ceil((deadline.workDeadlineAtMs - now()) / 1000))} seconds. Report grace: ${options.reportGraceMs / 1000} seconds.`;
+      logger.logUserMessage(requests, reminder);
+      messages.push(client.userMessage(reminder));
+      const tools = requestPhase === "report" ? [ASSESSMENT_REPORT_TOOL] : TOOLS;
+      // Logical IDs include abandoned work requests so every physical attempt
+      // remains linked to exactly one request across the phase transition.
+      const requestId = String(++requests).padStart(3, "0");
+      logger.logLlmRequest(requests, messages.length, { assessment_request_id: requestId });
       if (stopped()) break;
-      const response = await client.chat(messages, TOOLS, SYSTEM_PROMPT, {
-        runId, assessment: journal?.forRequest(requestId, controller.signal),
-      });
       for (const path of pendingEvidencePaths) exposedEvidencePaths.add(path);
       pendingEvidencePaths.clear();
+      let abortTimer: ReturnType<typeof setTimeout> | undefined;
+      let onAbort!: () => void;
+      const interrupted = new Promise<never>((_resolve, reject) => {
+        // Drain an already returned SDK response on this turn, while bounding
+        // clients that ignore abort. The journal seals pending usage as unknown.
+        onAbort = () => { abortTimer ??= setTimeout(() => reject(new Error("assessment request aborted")), 0); };
+      });
+      requestController.signal.addEventListener("abort", onAbort, { once: true });
+      if (requestController.signal.aborted) onAbort();
+      let response: AgentResponse;
+      try {
+        response = await Promise.race([
+          client.chat([...messages], tools, SYSTEM_PROMPT, {
+            runId, assessment: journal?.forRequest(requestId, requestController.signal),
+          }),
+          interrupted,
+        ]);
+      } catch (error) {
+        stopped();
+        if (state.current() === null && requestController !== controller) continue;
+        throw error;
+      } finally {
+        clearTimeout(abortTimer);
+        requestController.signal.removeEventListener("abort", onAbort);
+      }
       turns++;
       if (!journal) {
-        // Scripted clients without request control retain their historical accounting.
         totalInputTokens += response.usage.inputTokens;
         totalOutputTokens += response.usage.outputTokens;
         totalCacheCreation += response.usage.cacheCreationInputTokens ?? 0;
         totalCacheRead += response.usage.cacheReadInputTokens ?? 0;
         if (response.rawUsage !== undefined) logger.logUsageRow(response.rawUsage);
       }
-      logResponse(logger, turns, requestId, response);
+      logResponse(logger, requests, requestId, response);
       if (stopped()) break;
+      if (requestController !== controller) continue;
 
       pushAssistantTurn(messages, response.rawAssistantMessage);
+      if (requestPhase === "report" &&
+          (response.toolCalls.length !== 1 || response.toolCalls[0].name !== "report_result")) {
+        throw new Error("final report opportunity exhausted without a valid report_result");
+      }
       if (response.toolCalls.length === 0) {
         const reminder = "Read retained evidence or call report_result with a cited assessment.";
-        logger.logUserMessage(turns, reminder);
+        logger.logUserMessage(requests, reminder);
         messages.push(client.userMessage(reminder));
         continue;
       }
@@ -329,8 +378,9 @@ export async function runAssessment(options: AssessOptions): Promise<VetResult> 
       const responseEvidencePaths: string[] = [];
       for (const call of response.toolCalls) {
         if (stopped()) break work;
+        if (requestController !== controller) continue work;
         logger.logToolCall({
-          turn: turns,
+          turn: requests,
           toolUseId: call.id,
           name: call.name,
           arguments: call.arguments,
@@ -345,7 +395,7 @@ export async function runAssessment(options: AssessOptions): Promise<VetResult> 
               const repair = report.value.repair;
               if (repair !== undefined) {
                 logger.logEvent("assessment_report_repaired", {
-                  turn: turns,
+                  turn: requests,
                   wrapper: repair.wrapper,
                   criteria: report.value.criteria.length,
                 });
@@ -354,8 +404,11 @@ export async function runAssessment(options: AssessOptions): Promise<VetResult> 
                 ? "valid native report"
                 : "criteria recovered from reasoning markup";
               if (state.decide("report", reason)) accepted = report.value;
-              else controller.abort("assessment work deadline elapsed");
+              else controller.abort("assessment report deadline elapsed");
               break work;
+            }
+            if (requestPhase === "report") {
+              throw new Error("final report opportunity exhausted without a valid report_result: " + report.result.text);
             }
             result = report.result;
             error = true;
@@ -368,12 +421,13 @@ export async function runAssessment(options: AssessOptions): Promise<VetResult> 
             error = result.text.startsWith("Error:");
           }
         } catch (caught) {
+          if (requestPhase === "report") throw caught;
           error = true;
           result = textResult(`Error: ${caught instanceof Error ? caught.message : String(caught)}`);
         }
         results.push(error ? { ...result, isError: true } : result);
         logger.logToolResult({
-          turn: turns,
+          turn: requests,
           toolUseId: call.id,
           name: call.name,
           durationMs: now() - toolStartedAt,
@@ -391,10 +445,12 @@ export async function runAssessment(options: AssessOptions): Promise<VetResult> 
     state.decide("errored", error instanceof Error ? error.message : String(error));
     controller.abort(error);
     try {
-      logger.logRunError({ turn: turns + 1, message: error instanceof Error ? error.message : String(error) });
+      logger.logRunError({ turn: requests, message: error instanceof Error ? error.message : String(error) });
     } catch { /* Publication still attempts to retain an operational marker. */ }
   } finally {
-    clearTimeout(timer);
+    phase = "done";
+    clearTimeout(workTimer);
+    clearTimeout(reportTimer);
     options.signal?.removeEventListener("abort", cancel);
   }
 
@@ -407,8 +463,8 @@ export async function runAssessment(options: AssessOptions): Promise<VetResult> 
       ? `The assessor did not produce a valid report_result within ${maxTimeMs}ms. ${decision.reason}`
       : decision.reason,
   });
-  // Awaiting chat above drains observable settlement after abort. A transport that
-  // ignores abort can remain pending; the parent's hard termination is the fallback.
+  // Sealing records still-pending physical attempts as unknown and prevents
+  // abandoned responses from mutating evidence after completion.
   try {
     finalizeAssessment({ outDir, result, decision, logger, attemptJournal: journal });
   } catch (error) {
