@@ -252,7 +252,7 @@ Gauntlet ships as a `gauntlet` command on your PATH. The package isn't published
 - [Bun](https://bun.sh) — `curl -fsSL https://bun.sh/install | bash`
 - Google Chrome (or Chromium) — required for the `web` adapter; the CDP driver works against either
 - `tmux` — required for the `tui` adapter
-- An LLM credential — `ANTHROPIC_API_KEY` and/or `OPENAI_API_KEY` in your environment, or a Claude subscription via `CLAUDE_CODE_OAUTH_TOKEN` (see [Using a Claude subscription (OAuth)](#using-a-claude-subscription-oauth))
+- An LLM credential — `ANTHROPIC_API_KEY` and/or `OPENAI_API_KEY` in your environment, or a Claude subscription via `GAUNTLET_OAUTH_TOKEN` (see [Using a Claude subscription (OAuth)](#using-a-claude-subscription-oauth))
 
 ### Install
 
@@ -546,7 +546,9 @@ For Claude models, Gauntlet can authenticate with a **logged-in Claude subscript
    claude setup-token
    ```
 
-2. Put it in your environment as `CLAUDE_CODE_OAUTH_TOKEN` (e.g. in `.env`). When present, Gauntlet **prefers it over `ANTHROPIC_API_KEY`**; the API key remains the fallback. (`ANTHROPIC_AUTH_TOKEN` is accepted as an alias.)
+2. Put it in your environment as `GAUNTLET_OAUTH_TOKEN` (e.g. in `.env`, or a shell-global variable). When present, Gauntlet **prefers it over `ANTHROPIC_API_KEY`**; the API key remains the fallback.
+
+   `CLAUDE_CODE_OAUTH_TOKEN` and `ANTHROPIC_AUTH_TOKEN` are honoured too, after `GAUNTLET_OAUTH_TOKEN`, for environments that already export them on purpose. Do not store the token globally under either of those names: Claude Code reads both, so every Claude Code session on the machine would authenticate with that token instead of its own login.
 
 Unlike the other Anthropic env vars, Gauntlet reads this one explicitly: it constructs the client with the token as `authToken` (Bearer), sends the `anthropic-beta: oauth-2025-04-20` header, and — because Anthropic gates subscription tokens to Claude Code — prepends the exact Claude Code identity (`"You are Claude Code, Anthropic's official CLI for Claude."`) as the **first** system block of every request, with the QA system prompt following. A request missing that framing is rejected with `429`.
 
@@ -585,7 +587,7 @@ See the [Configuration](#configuration) section above for the full list. Quick r
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `CLAUDE_CODE_OAUTH_TOKEN` | Claude subscription token (`claude setup-token`); preferred over `ANTHROPIC_API_KEY` when set. See [Using a Claude subscription (OAuth)](#using-a-claude-subscription-oauth). | -- |
+| `GAUNTLET_OAUTH_TOKEN` | Claude subscription token (`claude setup-token`); preferred over `ANTHROPIC_API_KEY` when set. `CLAUDE_CODE_OAUTH_TOKEN` / `ANTHROPIC_AUTH_TOKEN` are read as fallbacks. See [Using a Claude subscription (OAuth)](#using-a-claude-subscription-oauth). | -- |
 | `ANTHROPIC_API_KEY` | API key for Claude models | -- |
 | `OPENAI_API_KEY` | API key for OpenAI models | -- |
 | `GAUNTLET_PORT` | Server port | 4400 |

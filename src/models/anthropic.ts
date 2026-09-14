@@ -51,18 +51,24 @@ export type AnthropicAuth =
 
 /**
  * Decide how to authenticate to Anthropic. A logged-in subscription is
- * preferred when present: a `claude setup-token` OAuth token in
- * CLAUDE_CODE_OAUTH_TOKEN (or the SDK-native ANTHROPIC_AUTH_TOKEN) wins over
+ * preferred when present: a `claude setup-token` OAuth token wins over
  * ANTHROPIC_API_KEY, which remains the fallback. Throws when neither is set.
+ *
+ * GAUNTLET_OAUTH_TOKEN is where the token belongs. Claude Code itself reads
+ * CLAUDE_CODE_OAUTH_TOKEN and ANTHROPIC_AUTH_TOKEN, so a token exported
+ * globally under either of those names overrides the auth of every Claude
+ * Code session on the machine, not just Gauntlet's. Both are still honoured,
+ * after GAUNTLET_OAUTH_TOKEN, for environments that set them on purpose.
  */
 export function resolveAnthropicAuth(
   env: Record<string, string | undefined> = process.env,
 ): AnthropicAuth {
-  const oauthToken = env.CLAUDE_CODE_OAUTH_TOKEN || env.ANTHROPIC_AUTH_TOKEN;
+  const oauthToken =
+    env.GAUNTLET_OAUTH_TOKEN || env.CLAUDE_CODE_OAUTH_TOKEN || env.ANTHROPIC_AUTH_TOKEN;
   if (oauthToken) return { mode: "oauth", token: oauthToken };
   if (env.ANTHROPIC_API_KEY) return { mode: "api-key" };
   throw new Error(
-    "No Anthropic credential found. Set CLAUDE_CODE_OAUTH_TOKEN (a subscription " +
+    "No Anthropic credential found. Set GAUNTLET_OAUTH_TOKEN (a subscription " +
     "token from `claude setup-token`) to use a logged-in Claude subscription, " +
     "or ANTHROPIC_API_KEY to use a pay-per-token API key."
   );
